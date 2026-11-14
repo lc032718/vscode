@@ -79,7 +79,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
 
 | 指令 | 作用 |
 |---|---|
-| `bootstrap.ps1 -List` | 查看 18 步清单 + 14 个插件明细 + 安装规则 + 指令表 |
+| `bootstrap.ps1 -List` | 查看 18 步清单 + 17 个插件明细 + 安装规则 + 指令表 |
 | `bootstrap.ps1 -All` | **安装所有**：执行全部 18 步 |
 | `bootstrap.ps1` | 同 `-All` |
 | `bootstrap.ps1 -Only 1,2,3` | 只跑指定步骤（单步写 `-Only 17`） |
@@ -110,7 +110,7 @@ bootstrap.ps1 -Only 16         # 复核校验表
 | # | 安装项 | 方式 | 目标位置 | 验证 |
 |---|---|---|---|---|
 | 1 | 最新版 VSCode | winget | `D:\Program Files\Microsoft VS Code` | `code --version` |
-| 2 | VSCode 插件（14 个） | `code --install-extension` | VSCode 用户扩展目录 | `code --list-extensions` |
+| 2 | VSCode 插件（17 个） | `code --install-extension` | VSCode 用户扩展目录 | `code --list-extensions` |
 | 3 | 最新版 Git | winget | `D:\Program Files\Git` | `git --version` |
 | 4 | 最新版 PowerShell 7 | winget（MSIX 例外） | `C:\Program Files\WindowsApps` | `pwsh --version` |
 | 5 | 最新版 Windows Terminal | winget（MSIX 例外） | `C:\Program Files\WindowsApps` | `wt --version` |
@@ -141,7 +141,7 @@ winget upgrade --id Microsoft.VisualStudioCode --source winget `
   --accept-package-agreements --accept-source-agreements
 code --version
 
-# 步骤 2：14 个插件（见第五节清单，脚本逐行 --force 安装）
+# 步骤 2：17 个插件（见第五节清单，脚本逐行 --force 安装）
 code --install-extension ms-vscode.cpptools --force
 code --list-extensions
 
@@ -257,7 +257,7 @@ alias.lg             = log --oneline --graph --decorate --all
 
 逐项 `git config --global` 写入，**不生成文件、不写 `include.path`**（避免留下指向会话临时目录的悬空引用）。
 
-### 5.3 VSCode 插件清单（14 个）
+### 5.3 VSCode 插件清单（17 个）
 
 | # | 扩展 ID | 用途 |
 |---|---|---|
@@ -267,14 +267,17 @@ alias.lg             = log --oneline --graph --decorate --all
 | 4 | `espressif.esp-idf-extension` | ESP-IDF 开发（编译/烧录/监视） |
 | 5 | `ms-vscode.hexeditor` | 二进制 / 固件十六进制查看 |
 | 6 | `eamodio.gitlens` | Git 行级溯源与提交对比 |
-| 7 | `ms-vscode.powershell` | PowerShell 语言与调试支持 |
-| 8 | `ms-python.python` | Python 语言支持 |
-| 9 | `redhat.vscode-yaml` | YAML 语法校验 |
-| 10 | `EditorConfig.EditorConfig` | 统一缩进 / 换行风格 |
-| 11 | `yzhang.markdown-all-in-one` | Markdown 编辑增强 |
-| 12 | `PKief.material-icon-theme` | 文件图标主题 |
-| 13 | `ms-ceintl.vscode-language-pack-zh-hans` | 中文（简体）界面语言包 |
-| 14 | `tencent-cloud.coding-copilot` | 腾讯云代码助手 CodeBuddy |
+| 7 | `mhutchie.git-graph` | Git 提交图谱可视化（分支/合并一目了然） |
+| 8 | `donjayamanne.githistory` | Git 文件 / 提交历史查看 |
+| 9 | `github.vscode-pull-request-github` | GitHub PR / Issue 浏览与管理 |
+| 10 | `ms-vscode.powershell` | PowerShell 语言与调试支持 |
+| 11 | `ms-python.python` | Python 语言支持 |
+| 12 | `redhat.vscode-yaml` | YAML 语法校验 |
+| 13 | `EditorConfig.EditorConfig` | 统一缩进 / 换行风格 |
+| 14 | `yzhang.markdown-all-in-one` | Markdown 编辑增强 |
+| 15 | `PKief.material-icon-theme` | 文件图标主题 |
+| 16 | `ms-ceintl.vscode-language-pack-zh-hans` | 中文（简体）界面语言包 |
+| 17 | `tencent-cloud.coding-copilot` | 腾讯云代码助手 CodeBuddy |
 
 > **WorkBuddy 是独立桌面客户端，VSCode 里没有官方 WorkBuddy 插件**（`tencent.workbuddy` 在扩展市场 404）；
 > VSCode 里的腾讯官方 AI 插件是 CodeBuddy，故清单用 `tencent-cloud.coding-copilot`。
@@ -329,7 +332,7 @@ Qt 需把 `D:\Dev\tools\Qt\Tools\mingw*\bin` 与 `D:\Dev\tools\Qt\<版本>\mingw
 | ESP-IDF 框架 | 目录实扫 `D:\Dev\esp\v*\esp-idf\tools\idf_tools.py` |
 | ESP-IDF 工具链 | `D:\Dev\esp\tools` 下有 xtensa / riscv / cmake 等目录 |
 | Qt qmake / Qt MinGW | 目录实扫 `qmake.exe` / `mingw32-make.exe` |
-| VSCode 扩展 | 已装数 ≥ 清单 14 个 |
+| VSCode 扩展 | 已装数 ≥ 清单 17 个 |
 | C 盘残留 | `C:\Espressif` 存在则 WARN，如实报告 |
 
 **按目录实扫**而不是只读 `Get-Command` 或 `$env:IDF_PATH`：EIM 只在激活脚本里注入环境变量，

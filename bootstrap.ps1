@@ -146,6 +146,9 @@ $Extensions = @(
     'espressif.esp-idf-extension'
     'ms-vscode.hexeditor'
     'eamodio.gitlens'
+    'mhutchie.git-graph'                       # Git 提交图谱（SCM 增强）
+    'donjayamanne.githistory'                  # Git 文件/提交历史查看（SCM 增强）
+    'github.vscode-pull-request-github'        # GitHub PR / Issue 管理（SCM 增强）
     'ms-vscode.powershell'
     'ms-python.python'
     'redhat.vscode-yaml'
@@ -164,6 +167,9 @@ $ExtensionLabels = @{
     'espressif.esp-idf-extension'            = 'ESP-IDF 开发（编译/烧录/监视）'
     'ms-vscode.hexeditor'                    = '二进制 / 固件十六进制查看'
     'eamodio.gitlens'                        = 'Git 行级溯源与提交对比'
+    'mhutchie.git-graph'                     = 'Git 提交图谱可视化（分支/合并一目了然）'
+    'donjayamanne.githistory'                = 'Git 文件 / 提交历史查看'
+    'github.vscode-pull-request-github'      = 'GitHub PR / Issue 浏览与管理'
     'ms-vscode.powershell'                   = 'PowerShell 语言与调试支持'
     'ms-python.python'                       = 'Python 语言支持'
     'redhat.vscode-yaml'                     = 'YAML 语法校验'
