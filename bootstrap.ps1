@@ -134,6 +134,16 @@ $Steps = @(
     @{ no = 18; title = '安装最新版 Qt6 + MinGW（自动，D 盘）'; kind = 'qt-aqt'; id = 'miurahr.aqtinstall'; dir = 'aqtinstall';
        detail = "winget 装 aqtinstall；按 --dry-run 逐个探测镜像上真正可装的 Qt 6.x（跳过无 Updates.xml 的版本），自动匹配配套 MinGW，走国内镜像、失败重试 3 次，全部 -O 装到 $QtRoot；以 qmake.exe 真实存在为成功判据。";
        check = "重跑 -Only 16 看 Qt qmake / Qt MinGW 是否 PASS"; enabled = $true }
+    @{ no = 19; title = '配置 VSCode ESP-IDF 集成路径'; kind = 'vscode-idf-config';
+       detail = '扩展 2.3.0 改用 EIM + idf.customExtraVars 取路径：用 idf.customExtraVars 只钉共享的 IDF_TOOLS_PATH=容器根（这是让 idf_tools.py export 成功的主开关；为空会报 cmake no installed versions），刻意不钉 IDF_PATH / IDF_PYTHON_ENV_PATH，交由 eim_idf.json 的选中版本决定，否则多版本会被锁死在同一版；同时修复 D:\Dev\esp\tools\eim_idf.json 残留的 C:\Espressif 路径 + 钉死 idf.eimIdfJsonPath + 加「ESP-IDF」终端 profile。需先跑步骤 17。';
+       check = '打开 ESP 项目用 ESP-IDF 扩展 Build 按钮或「ESP-IDF」终端'; enabled = $true }
+    @{ no = 20; title = '安装 ESP-IDF 多版本 6.0.2 / 5.4.3（与最新版共存）'; kind = 'eim-multi';
+       detail = "复用步骤 17 的 EIM TOML，把 v6.0.2 与 v5.4.3 装进 $WorkspaceRoot\esp 的各自版本目录（v<版本>\esp-idf），与最新版共享同一个工具根 $WorkspaceRoot\esp\tools——工具按「名称\版本号」子目录并存，互不覆盖；每个版本各自生成 Microsoft.v<版本>.PowerShell_profile.ps1 与独立 venv。首次下载数 GB，建议单跑 -Only 20。";
+       idfVersions = @('v6.0.2', 'v5.4.3');
+       check = 'idf-use -List 应看到三个版本；装完重跑 -Only 16 复核'; enabled = $true }
+    @{ no = 21; title = '安装 IDF 版本切换器（idf-use）'; kind = 'idf-switch';
+       detail = '把 idf-use.ps1 部署到用户目录并在 PowerShell $PROFILE 注册裸命令 idf-use：切换当前会话的 IDF_PATH / IDF_PYTHON_ENV_PATH / PATH，同步 eim_idf.json 选中版本供 IDE 使用，并按需持久化用户级环境变量。需先跑步骤 17（或 20）。';
+       check = 'idf-use -List；idf-use 5.4.3 后 idf.py --version'; enabled = $true }
 )
 
 # ============================================================
@@ -146,9 +156,6 @@ $Extensions = @(
     'espressif.esp-idf-extension'
     'ms-vscode.hexeditor'
     'eamodio.gitlens'
-    'mhutchie.git-graph'                       # Git 提交图谱（SCM 增强）
-    'donjayamanne.githistory'                  # Git 文件/提交历史查看（SCM 增强）
-    'github.vscode-pull-request-github'        # GitHub PR / Issue 管理（SCM 增强）
     'ms-vscode.powershell'
     'ms-python.python'
     'redhat.vscode-yaml'
@@ -167,9 +174,6 @@ $ExtensionLabels = @{
     'espressif.esp-idf-extension'            = 'ESP-IDF 开发（编译/烧录/监视）'
     'ms-vscode.hexeditor'                    = '二进制 / 固件十六进制查看'
     'eamodio.gitlens'                        = 'Git 行级溯源与提交对比'
-    'mhutchie.git-graph'                     = 'Git 提交图谱可视化（分支/合并一目了然）'
-    'donjayamanne.githistory'                = 'Git 文件 / 提交历史查看'
-    'github.vscode-pull-request-github'      = 'GitHub PR / Issue 浏览与管理'
     'ms-vscode.powershell'                   = 'PowerShell 语言与调试支持'
     'ms-python.python'                       = 'Python 语言支持'
     'redhat.vscode-yaml'                     = 'YAML 语法校验'
@@ -660,6 +664,232 @@ foreach ($s in $ordered) {
                 & $git config --global $g.Key $g.Value
             }
             Write-Ok "已写入 $($GitSettings.Count) 项全局配置（未生成任何文件引用）"
+        }
+        'vscode-idf-config' {
+            $code = Resolve-Tool 'code' $codeFallback
+            if (-not $code) { Write-Warning '    未找到 code：先执行步骤 1，或重开终端刷新 PATH。'; break }
+            $espRoot = Join-Path $WorkspaceRoot 'esp'
+            # 探测最新 esp-idf 版本目录（与 Invoke-Verify 同源逻辑，取最新）
+            $idfDir = Get-ChildItem -LiteralPath $espRoot -Directory -ErrorAction SilentlyContinue |
+                      Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'esp-idf\tools\idf_tools.py') } |
+                      Sort-Object Name | Select-Object -Last 1
+            if (-not $idfDir) {
+                Write-Warning "    未找到已装的 ESP-IDF（步骤 17 未执行？）。先跑 -Only 17 再跑本步骤。"
+                break
+            }
+            $idfPath = Join-Path $idfDir.FullName 'esp-idf'
+            # 探测 venv：tools\python\v<ver>\venv\Scripts\python.exe
+            $pyDir = Get-ChildItem -LiteralPath (Join-Path $espRoot 'tools\python') -Directory -ErrorAction SilentlyContinue |
+                     Sort-Object Name | Select-Object -Last 1
+            $pyBin = if ($pyDir) { Join-Path $pyDir.FullName 'venv\Scripts\python.exe' } else { $null }
+            if (-not ($pyBin -and (Test-Path -LiteralPath $pyBin))) {
+                Write-Warning "    未找到 ESP-IDF 自带 Python venv（$pyBin）；仍写入 idf.toolsPath/idf.espIdfPath，pythonBinPath 跳过。"
+                $pyBin = $null
+            }
+            # 探测 EIM 激活脚本（文件名含版本号，动态取，避免写死 v6.x）
+            $eimProfile = Get-ChildItem -LiteralPath (Join-Path $espRoot 'tools') -Filter 'Microsoft.*PowerShell_profile.ps1' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            $eimProfilePath = if ($eimProfile) { $eimProfile.FullName } else { (Join-Path $espRoot 'tools\Microsoft.v6.1.PowerShell_profile.ps1') }
+            # 修复 eim_idf.json：迁移到 D 盘后，安装记录里的 idfToolsPath/python/activationScript 仍指向已删的 C:\Espressif，
+            # 扩展 2.3.0 把 idfToolsPath 1:1 当 IDF_TOOLS_PATH 传给 idf_tools.py export，错值会致 cmake not found。
+            # 注：idfToolsPath 必须是容器根（如 D:\Dev\esp），不是 D:\Dev\esp\tools（后者反而 no installed versions）。
+            $eimJson = Join-Path $espRoot 'tools\eim_idf.json'
+            if (Test-Path -LiteralPath $eimJson) {
+                try {
+                    $eim = Get-Content -LiteralPath $eimJson -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $fixed = $false
+                    if ($eim.idfInstalled) {
+                        # 多版本关键：每条记录必须按自己的 name 推导 python / 激活脚本，
+                        # 不能统一取「最新版本」那一份，否则 v5.4.3 会被写成 v6.1 的 venv，直接坏。
+                        foreach ($inst in $eim.idfInstalled) {
+                            $name = $inst.name
+                            if ($inst.idfToolsPath -and $inst.idfToolsPath -ne $espRoot) {
+                                $inst.idfToolsPath = $espRoot; $fixed = $true
+                            }
+                            $expPy = Join-Path $espRoot "tools\python\$name\venv\Scripts\python.exe"
+                            if ((Test-Path -LiteralPath $expPy) -and $inst.python -ne $expPy) {
+                                $inst.python = $expPy; $fixed = $true
+                            }
+                            $expAct = Join-Path $espRoot "tools\Microsoft.$name.PowerShell_profile.ps1"
+                            if ((Test-Path -LiteralPath $expAct) -and $inst.activationScript -ne $expAct) {
+                                $inst.activationScript = $expAct; $fixed = $true
+                            }
+                            if ($inst.path) {
+                                $normPath = [System.IO.Path]::GetFullPath($inst.path)
+                                if ($inst.path -ne $normPath) { $inst.path = $normPath; $fixed = $true }
+                            }
+                        }
+                    }
+                    if ($fixed) {
+                        [System.IO.File]::WriteAllText($eimJson, ($eim | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+                        Write-Ok "已修复 $eimJson（idfToolsPath=$espRoot；python/激活脚本按各版本自身推导）"
+                    } else {
+                        Write-Host '    eim_idf.json 路径已正确，无需修改。' -ForegroundColor DarkGray
+                    }
+                    # EIM 默认还会往 C:\Espressif\tools\eim_idf.json 写一份；把 D 盘这份同步过去，
+                    # 让裸命令 `eim list / eim select` 与 IDE 看到同一份记录（避免两边分叉）。
+                    $cJson = 'C:\Espressif\tools\eim_idf.json'
+                    if (Test-Path -LiteralPath (Split-Path -Parent $cJson)) {
+                        try {
+                            Copy-Item -LiteralPath $eimJson -Destination $cJson -Force
+                            Write-Host "    已同步安装记录到 $cJson（供 eim list 使用）" -ForegroundColor DarkGray
+                        } catch { }
+                    }
+                } catch {
+                    Write-Warning "    修复 eim_idf.json 失败：$_（可手动把 $eimJson 的 idfToolsPath 改为 $espRoot）"
+                }
+            } else {
+                Write-Warning "    未找到 $eimJson；请先执行步骤 17 安装 ESP-IDF。"
+            }
+            # idf.py 在 $IDF_TOOLS_PATH 根目录找 espidf.constraints.v<版本>.txt，而 EIM 把它放在 ...\tools\ 下。
+            # 缺了会报 "doesn't exist. Perhaps you've forgotten to run the install scripts"（VSCode 里也同样报）。
+            $cfiles = Get-ChildItem -LiteralPath (Join-Path $espRoot 'tools') -Filter 'espidf.constraints.*.txt' -File -ErrorAction SilentlyContinue
+            foreach ($c in $cfiles) {
+                $dstFile = Join-Path $espRoot $c.Name
+                if (-not (Test-Path -LiteralPath $dstFile)) {
+                    Copy-Item -LiteralPath $c.FullName -Destination $dstFile -Force
+                    Write-Ok "已补 constraints 到容器根：$($c.Name)"
+                }
+            }
+            # 读/合并 VSCode 全局 settings.json（保留已有键，不覆盖整个文件）
+            # 兼容 PowerShell 5.1：不用 -AsHashtable（5.1 不支持会报参数错误），改用 PSCustomObject + Add-Member -Force
+            $vsSettings = Join-Path $env:APPDATA 'Code\User\settings.json'
+            $obj = $null
+            if (Test-Path -LiteralPath $vsSettings) {
+                try { $obj = Get-Content -LiteralPath $vsSettings -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $obj = $null }
+            }
+            if (-not $obj) { $obj = New-Object PSObject }
+            # 主修复：扩展 2.3.0 已移除 idf.espIdfPath/idf.toolsPath/idf.pythonBinPath，改用 EIM + idf.customExtraVars。
+            # IDF_TOOLS_PATH 的取值优先级为 customExtraVars > 缓存配置 > 进程env > 空；为空时 idf_tools.py export
+            # 会回退到不存在的 ~/.espressif，报 "tool cmake has no installed versions" → cmake not found。
+            # 多版本共存：只钉「共享」的 IDF_TOOLS_PATH（所有版本共用一个工具根），
+            # 刻意不钉 IDF_PATH / IDF_PYTHON_ENV_PATH —— 它们必须随 eim_idf.json 的选中版本变化，
+            # 一旦钉死就会把所有项目锁在同一版本，idf-use 切版本也随之失效。
+            $customVars = New-Object PSObject
+            $customVars | Add-Member -MemberType NoteProperty -Name 'IDF_TOOLS_PATH' -Value $espRoot -Force
+            $obj | Add-Member -MemberType NoteProperty -Name 'idf.customExtraVars' -Value $customVars -Force
+            # 清掉 2.3.0 已不读的旧键，避免误以为它们是「当前版本」而手改错（多版本下尤其误导）
+            foreach ($deadKey in @('idf.espIdfPath', 'idf.toolsPath', 'idf.pythonBinPath')) {
+                if ($obj.PSObject.Properties[$deadKey]) { $obj.PSObject.Properties.Remove($deadKey) }
+            }
+            # 备份：钉死 eim_idf.json 路径，避免扩展回退到 Windows 默认的 C:\Espressif\tools\eim_idf.json
+            $obj | Add-Member -MemberType NoteProperty -Name 'idf.eimIdfJsonPath' -Value $eimJson -Force
+            if (-not $obj.'terminal.integrated.profiles.windows') {
+                $obj | Add-Member -MemberType NoteProperty -Name 'terminal.integrated.profiles.windows' -Value (New-Object PSObject) -Force
+            }
+            # 终端 profile 走 idf-use -Default：按 eim_idf.json 的选中版本激活，不再写死某一版
+            $idfUseScript = Join-Path $env:USERPROFILE 'idf-use.ps1'
+            $obj.'terminal.integrated.profiles.windows' | Add-Member -MemberType NoteProperty -Name 'ESP-IDF' -Value @{
+                source = 'PowerShell'
+                args   = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $idfUseScript, '-Default')
+            } -Force
+            [System.IO.File]::WriteAllText($vsSettings, ($obj | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+            Write-Ok "已钉 idf.customExtraVars: IDF_TOOLS_PATH=$espRoot（共享工具根；IDF_PATH/venv 由 eim 选中版本决定）"
+            Write-Ok "已钉 idf.eimIdfJsonPath = $eimJson；「ESP-IDF」终端 profile → idf-use -Default"
+            Write-Host '    重启 VSCode 后，打开 ESP 项目用 Build 按钮或「ESP-IDF」终端即可编译。' -ForegroundColor DarkGray
+            Write-Host '    多版本切换：在终端敲 idf-use 5.4.3（详见 README 5.8）。' -ForegroundColor DarkGray
+        }
+        'eim-multi' {
+            # 与步骤 17 共用同一个 EIM TOML（路径全钉 D 盘），只额外用 -i 指定要装的版本。
+            # EIM 会按「path + 版本名」派生 v<版本>\esp-idf，因此多版本天然分目录、可共存。
+            $espRoot = Join-Path $WorkspaceRoot 'esp'
+            New-Item -ItemType Directory -Force -Path $espRoot | Out-Null
+            $cfg = New-EimConfig $espRoot
+            $tool = Resolve-Tool 'eim' $eimFallback
+            if (-not $tool) {
+                foreach ($root in @((Join-Path $InstallRoot 'EIM'), (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'))) {
+                    if ($root -and (Test-Path -LiteralPath $root)) {
+                        $cand = Get-ChildItem -LiteralPath $root -Filter 'eim.exe' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($cand) { $tool = $cand.FullName; break }
+                    }
+                }
+            }
+            if (-not $tool) { Write-Warning '    未找到 eim：先执行步骤 17，或重开终端刷新 PATH 后重跑 -Only 20。'; break }
+            $vers = @($s.idfVersions)
+            if ($vers.Count -eq 0) { Write-Warning '    清单里没有配置 idfVersions，跳过。'; break }
+            # 已装的版本跳过，避免重复下载
+            $todo = @()
+            foreach ($v in $vers) {
+                $dir = Join-Path $espRoot "$v\esp-idf"
+                if (Test-Path -LiteralPath (Join-Path $dir 'tools\idf_tools.py')) {
+                    Write-Host "    $v 已存在，跳过：$dir" -ForegroundColor DarkGray
+                } else { $todo += $v }
+            }
+            if ($todo.Count -eq 0) { Write-Ok "目标版本均已安装：$($vers -join ', ')"; break }
+            Write-Host "    D 盘配置：$cfg" -ForegroundColor White
+            Write-Host "    待装版本：$($todo -join ', ') → $espRoot\v<版本>\esp-idf（共享工具根 $espRoot\tools）" -ForegroundColor White
+            Write-Host "    执行 eim install -i $($todo -join ',')（非交互，需联网下载数 GB）" -ForegroundColor White
+            # 关键：EIM 默认把安装记录写到 C:\Espressif\tools\eim_idf.json，
+            # 而 VSCode 扩展读的是 idf.eimIdfJsonPath 钉死的 D 盘那份 —— 不指回来就会出现
+            # 「装好了但 IDE/新版本环境读不到」的情况；同时避免 C 盘再长出目录。
+            # 镜像：GitHub 直连实测会 git clone exit 128 / schannel closed abruptly，必须走国内镜像。
+            $jsonDir = Join-Path $espRoot 'tools'
+            New-Item -ItemType Directory -Force -Path $jsonDir | Out-Null
+            $mirrorArgs = @(
+                '--esp-idf-json-path', $jsonDir
+                '--idf-mirror', 'https://git.espressif.com.cn'
+                '--repo-stub', 'Espressif/esp-idf'
+                '-m', 'https://dl.espressif.cn/github_assets'
+            )
+            & $tool install --config $cfg -i ($todo -join ',') @mirrorArgs
+            $exit = $LASTEXITCODE
+            if ($exit -eq 0) {
+                Write-Ok "已安装：$($todo -join ', ')（与已有版本共存于 $espRoot）"
+                $jsonFile = Join-Path $jsonDir 'eim_idf.json'
+                if (Test-Path -LiteralPath $jsonFile) {
+                    Write-Ok "安装记录已落在 D 盘：$jsonFile"
+                } else {
+                    Write-Warning "    $jsonDir 下未生成 eim_idf.json：请检查 C:\Espressif\tools\eim_idf.json 并合并到 D 盘。"
+                }
+                if (Test-Path -LiteralPath 'C:\Espressif\tools') {
+                    $cLeft = @(Get-ChildItem -LiteralPath 'C:\Espressif\tools' -Force -ErrorAction SilentlyContinue)
+                    if ($cLeft.Count -gt 0) {
+                        Write-Warning "    C:\Espressif\tools 仍有 $($cLeft.Count) 项（EIM 默认索引位置，仅元数据可接受；不应有工具链）。"
+                    }
+                }
+            }
+            else { Write-Warning "    eim 退出码 $exit：看上面的错误；单个版本失败可改用 -Only 20 前先确认 tag 存在（git ls-remote --tags）" }
+        }
+        'idf-switch' {
+            # 切换器源文件与 bootstrap.ps1 同目录（仓库里成对分发），复制到用户目录后注册裸命令
+            $src = Join-Path $PSScriptRoot 'idf-use.ps1'
+            $dst = Join-Path $env:USERPROFILE 'idf-use.ps1'
+            if (-not (Test-Path -LiteralPath $src)) {
+                Write-Warning "    未找到 $src；请把它和 bootstrap.ps1 放在同一目录（仓库 F:\githup\vscode\idf-use.ps1）。"
+                break
+            }
+            # 同目录部署时 src == dst，Copy-Item 会报「无法使用项其自身覆盖该项」，需跳过
+            $srcFull = [System.IO.Path]::GetFullPath($src)
+            $dstFull = [System.IO.Path]::GetFullPath($dst)
+            if ($srcFull -ieq $dstFull) {
+                Write-Host "    切换器已在目标位置，跳过复制：$dst" -ForegroundColor DarkGray
+            } else {
+                Copy-Item -LiteralPath $src -Destination $dst -Force
+                Write-Ok "已部署切换器：$dst"
+            }
+            # 注册别名（幂等：已注册则跳过）
+            # 注意：$PROFILE 必须存成 UTF-8 BOM，否则 PowerShell 5.1 按 ANSI 解析会把中文注释读成乱码；
+            # 这里注释与标记一律用 ASCII，最稳。
+            $profilePath = $PROFILE
+            $profileDir = Split-Path -Parent $profilePath
+            if (-not (Test-Path -LiteralPath $profileDir)) { New-Item -ItemType Directory -Force -Path $profileDir | Out-Null }
+            $marker = '# ESP-IDF multi-version switcher (bootstrap step 21)'
+            $existing = if (Test-Path -LiteralPath $profilePath) { Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 } else { '' }
+            if ($existing -notmatch [regex]::Escape($marker)) {
+                $block = @"
+
+$marker
+`$idfUseScript = Join-Path `$env:USERPROFILE 'idf-use.ps1'
+if (Test-Path -LiteralPath `$idfUseScript) {
+    Set-Alias -Name 'idf-use' -Value `$idfUseScript -Scope Global -Force
+}
+"@
+                $merged = $existing.TrimEnd() + "`r`n" + $block + "`r`n"
+                [System.IO.File]::WriteAllText($profilePath, $merged, (New-Object System.Text.UTF8Encoding($true)))
+                Write-Ok "已在 $profilePath 注册 idf-use 别名（UTF-8 BOM 保存）"
+            } else {
+                Write-Host "    $profilePath 已注册 idf-use，跳过。" -ForegroundColor DarkGray
+            }
+            Write-Host '    重开终端后可直接敲：idf-use -List / idf-use 5.4.3 / idf-use -Current' -ForegroundColor DarkGray
         }
         'dirs' {
             foreach ($sub in $s.dirs) {

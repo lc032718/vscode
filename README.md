@@ -101,7 +101,8 @@ bootstrap.ps1 -All             # 全量（会联网下载数 GB，可能弹 UAC�
 bootstrap.ps1 -Only 16         # 复核校验表
 ```
 
-第 17 步 ESP-IDF、第 18 步 Qt 各需下载数 GB，**建议单跑** `-Only 17`、`-Only 18`。
+第 17 步 ESP-IDF、第 18 步 Qt 各需下载数 GB，**建议单跑** `-Only 17`、`-Only 18`；
+第 20 步（6.0.2 / 5.4.3 双版本）同样要下载数 GB，**单跑** `-Only 20`。
 
 ---
 
@@ -127,8 +128,11 @@ bootstrap.ps1 -Only 16         # 复核校验表
 | 16 | 冒烟校验 | 自动（强制最后） | — | PASS / WARN / FAIL 表 |
 | 17 | 最新版 ESP-IDF（EIM 自动） | winget + `eim install` | `D:\Dev\esp`（全部产物） | `eim list` |
 | 18 | 最新版 Qt6 + MinGW（aqt 自动） | winget + `aqt` | `D:\Dev\tools\Qt` | qmake.exe 真实存在 |
+| 19 | 配置 VSCode ESP-IDF 集成路径 | 写 VSCode settings | `idf.*` 钉到 `D:\Dev\esp` | 打开 ESP 项目能编译（见 5.7） |
+| 20 | ESP-IDF 多版本 6.0.2 / 5.4.3 | `eim install -i` | `D:\Dev\esp\v6.0.2`、`v5.4.3`（共享 `tools`） | `idf-use -List` 三个版本（见 5.8） |
+| 21 | IDF 版本切换器 `idf-use` | 复制脚本 + `$PROFILE` 别名 | `%USERPROFILE%\idf-use.ps1` | `idf-use 5.4.3` 后 `idf.py --version` |
 
-> 执行顺序是 1→15 → 17 → 18 → 16：追加步骤后冒烟校验仍强制排最后，保证校验结果准确。
+> 执行顺序是 1→15 → 17 → 18 → 19 → 20 → 21 → 16：追加步骤后冒烟校验仍强制排最后，保证校验结果准确。
 
 ### 前三步的具体流程
 
@@ -312,12 +316,192 @@ D:\Program Files\          # 软件本体
 D:\Dev\                    # 工具链 / 仓库 / 数据
   ├─ repos\                # 代码仓库
   ├─ tools\Qt\             # Qt 库 + MinGW + Qt Creator
-  ├─ esp\                  # ESP-IDF（框架 v6.1/、工具链 tools/、缓存 dist/、配置 *.toml）
+  ├─ esp\                  # ESP-IDF 根（多版本共存）
+  │   ├─ eim-config.toml   #   EIM 配置：路径全部钉 D 盘
+  │   ├─ v6.1\esp-idf\     #   最新版（步骤 17）
+  │   ├─ v6.0.2\esp-idf\   #   6.0.2（步骤 20）
+  │   ├─ v5.4.3\esp-idf\   #   5.4.3（步骤 20）
+  │   ├─ dist\             #   下载缓存（共享）
+  │   └─ tools\            #   工具根（多版本共享，工具按「名称\版本」并存）
+  │       ├─ cmake\4.0.3\          #   多版本各取所需，互不覆盖
+  │       ├─ xtensa-esp-elf\esp-15.2.0_xxx\ 、esp-14.2.0_xxx\
+  │       ├─ python\v6.1\venv\ 、v6.0.2\venv\ 、v5.4.3\venv\
+  │       ├─ Microsoft.v6.1.PowerShell_profile.ps1      # 每版一个激活脚本
+  │       ├─ Microsoft.v6.0.2.PowerShell_profile.ps1
+  │       ├─ Microsoft.v5.4.3.PowerShell_profile.ps1
+  │       └─ eim_idf.json  #   安装记录 + 当前选中版本（IDE 读这个）
   └─ tmp\
 ```
 
-ESP-IDF 激活后由 EIM 注入：`IDF_PATH`、`IDF_TOOLS_PATH`、`IDF_PYTHON_ENV_PATH`。
+ESP-IDF 激活后由 EIM 注入环境变量。**多版本共存的关键是分工**：
+
+| 变量 | 取值 | 是否随版本变 |
+|---|---|---|
+| `IDF_TOOLS_PATH` | `D:\Dev\esp`（容器根，**不是** `...\tools`） | 否，三版共享同一个工具根 |
+| `IDF_PATH` | `D:\Dev\esp\v<版本>\esp-idf` | 是 |
+| `IDF_PYTHON_ENV_PATH` | `D:\Dev\esp\tools\python\v<版本>\venv` | 是 |
+| `PATH` | 各版激活脚本注入自己所需的工具版本目录 | 是（切换时先剔除旧条目） |
+
 Qt 需把 `D:\Dev\tools\Qt\Tools\mingw*\bin` 与 `D:\Dev\tools\Qt\<版本>\mingw_64\bin` 加入 PATH。
+
+### 5.6 VSCode 用户设置（受限模式修复）
+
+VSCode 的「工作区信任（Workspace Trust）」会在打开**未信任**文件夹时进入受限模式（Restricted Mode）：
+扩展被禁用、任务不自动运行、配置不生效。本机实测信任列表为空（打开任何文件夹都受限）。
+
+修复：在 VSCode 用户设置里关闭该机制，重启 VSCode（或 `Developer: Reload Window`）生效。
+
+- 位置：`%APPDATA%\Code\User\settings.json`（标准安装；User Installer 同路径）
+- 新增一行：
+
+```json
+{
+    "security.workspace.trust.enabled": false
+}
+```
+
+> 这是「机器级」开关：之后打开任何文件夹都不再询问，包括将来 clone 的第三方仓库。
+> 对个人开发机、文件都是自己的场景通常没问题，也是常用做法。
+> 若想**保留信任保护、只信任自己的开发根目录**，可改为把 `F:\githup`、`D:\Dev` 等加入信任列表，
+> 而不是整体关闭——需要时再单独处理。
+
+### 5.7 VSCode ESP-IDF 集成路径（编译报 `cmake was not found` / `idf_tools.py export` 失败的根因）
+
+ESP-IDF 扩展 **2.3.0 已移除** `idf.espIdfPath` / `idf.toolsPath` / `idf.pythonBinPath` 这三个旧设置
+（源码里 0 引用，写了也不生效），**改由 EIM（Espressif Install Manager）+ `idf.customExtraVars` 提供路径**。
+扩展启动会跑 `idf_tools.py export`，靠 `IDF_TOOLS_PATH` 定位工具目录并导出 PATH（含 cmake/ninja）。
+`IDF_TOOLS_PATH` 的取值优先级（源码 `c = customExtraVars || 缓存配置 || 进程env || ""`）：
+
+1. **`idf.customExtraVars.IDF_TOOLS_PATH`**（最高优先级，本机修复的主开关）；
+2. 扩展缓存的全局配置 / `process.env.IDF_TOOLS_PATH`；
+3. 都不设 → **为空** → `idf_tools.py` 回退到 `~/.espressif`（本机不存在）→ 报
+   `ERROR: tool cmake has no installed versions` → 连锁导致 `idf.py set-target` 报
+   `cmake must be available on the PATH` / `cmake was not found`。
+
+> 这就是本机一直报错、且报错文本逐字节不变的根因：**`IDF_TOOLS_PATH` 为空**，不是指向 C 盘。
+
+**修复（本机已按此配好，双保险覆盖所有取值路径）：**
+
+- **主修复 — VSCode 用户设置**（`%APPDATA%\Code\User\settings.json`）用 `idf.customExtraVars` 显式钉死
+  （优先级最高，直接覆盖"为空"的情况）：
+
+```json
+{
+    "idf.customExtraVars": {
+        "IDF_TOOLS_PATH": "D:\\Dev\\esp"
+    },
+    "idf.eimIdfJsonPath": "D:\\Dev\\esp\\tools\\eim_idf.json",
+    "terminal.integrated.profiles.windows": {
+        "ESP-IDF": {
+            "source": "PowerShell",
+            "args": ["-NoExit", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<用户名>\\idf-use.ps1", "-Default"]
+        }
+    }
+}
+```
+
+> **多版本注意**：`idf.customExtraVars` 里**只放 `IDF_TOOLS_PATH`**（三版共享的工具根）。
+> 千万不要把 `IDF_PATH` / `IDF_PYTHON_ENV_PATH` 也钉进去——那会把所有项目锁死在同一个版本，
+> `idf-use` 切版本、`eim select` 都会失效（详见 5.8）。`IDF_PATH` 由 `eim_idf.json` 的选中版本决定。
+> 终端 profile 用 `idf-use -Default` 而不是写死某个 `Microsoft.v<版本>.PowerShell_profile.ps1`，切版本后自动跟随。
+> 其中 `<用户名>` 由 `bootstrap.ps1 -Only 19` 自动替换为真实的 `%USERPROFILE%` 绝对路径（VSCode 的 args 不展开 `%VAR%`）。
+
+- **备份 — EIM 安装记录 `eim_idf.json`**：扩展还会从 `idf.eimIdfJsonPath`（本机指向 `D:\Dev\esp\tools\eim_idf.json`）
+  或默认回退位置 `C:\Espressif\tools\eim_idf.json` 读 `idfToolsPath`。两份都要保证 `idfToolsPath` 为容器根
+  `D:\Dev\esp`（注意**不是** `D:\Dev\esp\tools`），并把 `python` / `activationScript` / `path` 也指向 D 盘。
+  本机已把这两份都改成正确值。
+  > ⚠️ `idfToolsPath` 必须是容器根 `D:\Dev\esp`：实测 `=D:\Dev\esp` 时 `idf_tools.py export` 成功（EXIT 0）；
+  > `=D:\Dev\esp\tools` 反而报 "no installed versions"。
+
+> 说明：`idf.espIdfPath` / `idf.toolsPath` / `idf.pythonBinPath` 在 2.3.0 已失效（仅保留兼容、不生效）；
+> 真正生效的是 **`idf.customExtraVars` + 正确的 `eim_idf.json`**。
+> 另外扩展启动会跑 `eim.exe gui --help` 探测 GUI 支持，本机 eim 0.21.1 无 `gui` 子命令会报
+> `unrecognized subcommand 'gui'` —— 这是**非致命噪声**，扩展会自动回退 `wizard`，不影响编译。
+> 换机可用 `bootstrap.ps1 -Only 19` 一键修 `eim_idf.json` 并钉死 `idf.customExtraVars` / `idf.eimIdfJsonPath`。
+
+### 5.8 多版本 ESP-IDF 共存与切换（6.0.2 / 5.4.3 / 最新版）
+
+同一台机可并存多套 ESP-IDF，**互不覆盖**。EIM 按「根目录 + 版本名」派生框架目录，工具根则三版共享。
+
+**为什么能共存**
+
+| 组成 | 位置 | 是否共享 |
+|---|---|---|
+| 框架源码 | `D:\Dev\esp\v<版本>\esp-idf` | 每版独立 |
+| 工具链（cmake / ninja / gcc / openocd…） | `D:\Dev\esp\tools\<工具名>\<工具版本>` | **共享根**，按版本号分子目录并存 |
+| Python 虚拟环境 | `D:\Dev\esp\tools\python\v<版本>\venv` | 每版独立 |
+| 激活脚本 | `D:\Dev\esp\tools\Microsoft.v<版本>.PowerShell_profile.ps1` | 每版独立 |
+| 下载缓存 | `D:\Dev\esp\dist` | 共享（省重复下载） |
+| 安装记录 / 选中版本 | `D:\Dev\esp\tools\eim_idf.json` | 共享，`idfSelectedId` 决定 IDE 用哪版 |
+
+> 关键：`IDF_TOOLS_PATH` 只有**一个**值 `D:\Dev\esp`（容器根），三版共用；
+> 变的只有 `IDF_PATH`、`IDF_PYTHON_ENV_PATH` 和注入 PATH 的具体工具目录。
+
+**安装（步骤 20）**
+
+```powershell
+bootstrap.ps1 -Only 20      # 装 v6.0.2 + v5.4.3，已存在的版本自动跳过
+```
+
+等价手工命令（国内镜像，GitHub 直连不稳定时必须带）：
+
+```powershell
+eim install --config D:\Dev\esp\eim-config.toml -i v6.0.2,v5.4.3 -n true `
+  --idf-mirror https://git.espressif.com.cn --repo-stub Espressif/esp-idf `
+  -m https://dl.espressif.cn/github_assets
+```
+
+- `--idf-mirror` + `--repo-stub` 把 clone 地址改成 `https://git.espressif.com.cn/Espressif/esp-idf.git`；
+- `-m` 让工具链（cmake / ninja / gcc 等）从 `dl.espressif.cn` 下载，而不是 github.com；
+- 不加镜像时实测会报 `git clone failed (exit code 128)` / `schannel: server closed abruptly`。
+
+**切换（步骤 21 部署的 `idf-use`）**
+
+```powershell
+idf-use -List                 # 列出已装版本，* 为当前会话在用
+idf-use 5.4.3                 # 切换：当前会话生效 + 持久化（新终端默认该版）
+idf-use v6.0.2 -SessionOnly   # 只切当前会话，不动用户级环境变量
+idf-use -Current              # 查看 IDF_PATH / venv / cmake / python / idf.py 版本
+idf-use -Default              # 回到 eim 选中的版本（VSCode 终端 profile 用这个）
+```
+
+切换动作（全部在同一会话内完成，无需重开终端）：
+
+1. 退出上一版 venv（`VIRTUAL_ENV\Scripts\deactivate.ps1`）；
+2. 从 PATH 剔除所有 `D:\Dev\esp\tools\*` 条目，但**保留**共享 base python（`tools\python`、`tools\python\Scripts`）；
+3. 清掉 `IDF_*` / `ESP_*` 变量与 `idf.py` / `esptool` 等函数别名；
+4. dot-source 目标版本的 `Microsoft.v<版本>.PowerShell_profile.ps1`；
+5. 把 `IDF_TOOLS_PATH` 纠正为容器根 `D:\Dev\esp`（EIM 激活脚本会写成本版本 `...\tools`，层级不对）；
+6. 把 `tools\espidf.constraints.v<版本>.txt` 补一份到容器根（见下方「路径层级坑」）；
+7. `eim select <版本>` 同步 `eim_idf.json`，VSCode ESP-IDF 扩展随之切换；
+8. 默认写用户级持久变量（`IDF_PATH` / `IDF_PYTHON_ENV_PATH` / `ESP_IDF_VERSION` / `IDF_VERSION`），让新终端也落在同一版。
+
+**路径层级坑（实测，必须知道）**
+
+同一台机上，两个工具对 `IDF_TOOLS_PATH` 的隐含约定不同：
+
+| 工具 | 要求 | 原因 |
+|---|---|---|
+| `idf_tools.py export` | `IDF_TOOLS_PATH=D:\Dev\esp`（容器根） | EIM 写进 `tools.json` 的目录名带 `tools/` 前缀，实际拼成 `D:\Dev\esp\tools\<工具>`；给 `...\tools` 会拼成 `...\tools\tools\<工具>` → 报 `tool xxx has no installed versions` |
+| `idf.py` | 在 `$IDF_TOOLS_PATH` **根**找 `espidf.constraints.v<版本>.txt` | EIM 把该文件放在 `D:\Dev\esp\tools\` 下 → 容器根缺文件时报 `doesn't exist. Perhaps you've forgotten to run the install scripts` |
+
+桥接办法（`idf-use` 已自动做）：`IDF_TOOLS_PATH` 固定容器根，同时把 `tools\espidf.constraints.*.txt`
+复制一份到 `D:\Dev\esp\`。两个工具就都满足，`idf.py --version` 与 `idf_tools.py export` 同时正常。
+
+**共存时的三条硬约束**
+
+1. **不要把 `IDF_PATH` / `IDF_PYTHON_ENV_PATH` 写进 VSCode 的 `idf.customExtraVars`** —— 一旦钉死，所有项目锁在同一版本，`idf-use` 与 `eim select` 全部失效（只钉 `IDF_TOOLS_PATH`）。
+2. **不要跨版本共用 venv** —— v5.4.3 与 v6.x 的 `requirements` 不同，EIM 已按版本建独立 venv。
+3. **切版本后先 `idf.py fullclean`** —— 不同版本的 `build/` 配置（CMake 缓存、工具链 ABI）不兼容，直接增量编译会报奇怪的链接错误。
+
+**验证**
+
+```powershell
+idf-use -List
+idf-use 5.4.3 ; idf.py --version      # 期望 ESP-IDF v5.4.3
+idf-use 6.0.2 ; idf.py --version      # 期望 ESP-IDF v6.0.2
+idf-use 6.1   ; idf.py --version      # 期望 ESP-IDF v6.1
+```
 
 ---
 
@@ -330,6 +514,7 @@ Qt 需把 `D:\Dev\tools\Qt\Tools\mingw*\bin` 与 `D:\Dev\tools\Qt\<版本>\mingw
 | SSH 私钥 | `%USERPROFILE%\.ssh\id_ed25519_new` 存在 |
 | 工作目录 / 安装根（D 盘） | 目录存在，统计子目录数 |
 | ESP-IDF 框架 | 目录实扫 `D:\Dev\esp\v*\esp-idf\tools\idf_tools.py` |
+| ESP-IDF 多版本（步骤 20） | `idf-use -List` 能列出 6.0.2 / 5.4.3 / 最新版，各自有 venv 与激活脚本 |
 | ESP-IDF 工具链 | `D:\Dev\esp\tools` 下有 xtensa / riscv / cmake 等目录 |
 | Qt qmake / Qt MinGW | 目录实扫 `qmake.exe` / `mingw32-make.exe` |
 | VSCode 扩展 | 已装数 ≥ 清单 17 个 |
@@ -355,13 +540,18 @@ Qt 装到 D 盘也可能没加 PATH，只看环境变量会误报 FAIL。
 | 🟠 P1 | 校验里 git / code 仍指向 C 盘 | `--location` 只对全新安装生效，不迁移已装软件 | 显式列为必要例外，执行时检测空目标目录并提示 |
 | 🔵 P2 | `找不到可用的升级` 打印两遍 | `install` 已自动尝试升级，随后 `upgrade` 又输出一次 | 只在真有升级动作时打印 upgrade 输出 |
 | 🔵 P2 | 校验新增 `C 盘残留` | 旧脚本遗留需在后续清理 | WARN 级如实报告，不假装全在 D 盘 |
+| 🟠 P1 | VSCode 编译 ESP 项目报 `cmake was not found` / `idf_tools.py export` 失败 | 扩展 2.3.0 的 `IDF_TOOLS_PATH` 为空（未设 `idf.customExtraVars`、缓存配置里也没有该值），`idf_tools.py` 回退到不存在的 `~/.espressif` → `no installed versions` → cmake 不在 PATH | 用 `idf.customExtraVars` 钉死 `IDF_TOOLS_PATH=D:\Dev\esp`（主），并修 `eim_idf.json` 三处路径 + 钉 `idf.eimIdfJsonPath`（备）；详见 5.7，bootstrap 步骤 19 一键修复 |
+| 🟠 P1 | 需求变成 6.0.2 / 5.4.3 / 最新版三版共存 | 单版本环境变量（`IDF_PATH`/venv/PATH）切版本会被上一版残留污染；`idf.customExtraVars` 若钉死 `IDF_PATH` 会把所有项目锁在同一版 | 框架按 `v<版本>` 分目录 + 共享工具根 + 每版独立 venv/激活脚本；新增 `idf-use` 切换器（剔除旧 PATH、纠正 `IDF_TOOLS_PATH`、`eim select` 同步、可选持久化）；`customExtraVars` 只留 `IDF_TOOLS_PATH`（详见 5.8） |
+| 🔴 P0 | `eim install -i v6.0.2,v5.4.3` 报 `git clone failed (exit code 128)` / `schannel: server closed abruptly` | 直连 GitHub clone 被中断（国内网络） | 安装加 `--idf-mirror https://git.espressif.com.cn --repo-stub Espressif/esp-idf -m https://dl.espressif.cn/github_assets`，clone 与工具下载都走国内镜像 |
+| 🟠 P1 | EIM 安装记录默认写 `C:\Espressif\tools\eim_idf.json`，与 D 盘那份分裂 | EIM 的 `--esp-idf-json-path` 默认值是 `C:\Espressif\tools` | 步骤 20 显式传 `--esp-idf-json-path D:\Dev\esp\tools`，安装后校验记录落地并检查 C 盘残留 |
 
 ### 实测依据
 
 - `aqt install-qt ... --dry-run`：6.12.0 / 6.11.3 / 6.11.2 → `exit=1 Failed to locate XML data`；6.10.3 → `exit=0 Total packages: 8`
 - 国内镜像 `mirrors.aliyun.com/qt/`、`mirrors.tuna.tsinghua.edu.cn/qt/` → `exit=0`
 - 6.10.3 dry-run 输出中的 MinGW runtime：`MinGW-w64-x86_64-13.1.0` → 对应 `tools_mingw1310`
-- `eim_idf.json` 实测：`idfToolsPath: C:\Espressif\tools`、`python: C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe`
+- `eim_idf.json` 实测：迁移后 `idfToolsPath` 残留 `C:\Espressif\tools`、`python` 残留 `C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe`（已修正为 `D:\Dev\esp` / `D:\Dev\esp\tools\...`）；`idfToolsPath` 必须是容器根 `D:\Dev\esp`（`D:\Dev\esp\tools` 反而会 "no installed versions"）
+- `idf_tools.py export` 实测：`IDF_TOOLS_PATH=D:\Dev\esp` 时 EXIT=0 正确导出全部工具 PATH；**为空/未设**会回退 `~/.espressif` 报 `ERROR: tool cmake has no installed versions`（exit 1），这正是 VSCode 扩展报错、`cmake not found` 的根源。修复靠 `idf.customExtraVars.IDF_TOOLS_PATH`（优先级最高，覆盖为空）
 
 ### C 盘残留迁移指引（本次 10.42 GB）
 
@@ -386,17 +576,27 @@ Qt 装到 D 盘也可能没加 PATH，只看环境变量会误报 FAIL。
 | 未找到 winget | Microsoft Store 装「应用安装程序 App Installer」 |
 | Qt 下载中断 | 重跑 `-Only 18`，已下载内容会复用；必要时 `-QtMirror` 换镜像或 `-QtVersion` 钉版本 |
 | ESP-IDF 下载慢 | EIM 会自动选国内镜像（`git.espressif.com.cn` / `dl.espressif.cn`）；失败重跑 `-Only 17` |
+| VSCode 老是处于受限模式 | 信任列表为空所致；在 `%APPDATA%\Code\User\settings.json` 加 `"security.workspace.trust.enabled": false`，重启 VSCode 生效（详见 5.6） |
+| VSCode 编译报 `cmake was not found` / `idf_tools.py export` 失败（`no installed versions`） | 扩展 2.3.0 的 `IDF_TOOLS_PATH` 为空所致；用 `idf.customExtraVars` 钉死 `IDF_TOOLS_PATH=D:\Dev\esp`（主）+ 修正 `eim_idf.json` 三处路径并钉 `idf.eimIdfJsonPath`（备），重启 VSCode（详见 5.7） |
+| 扩展日志出现 `eim.exe gui --help` 报 `unrecognized subcommand 'gui'` | 本机 eim 0.21.1 无 `gui` 子命令，属非致命探测噪声，扩展自动回退 `wizard`，不影响编译 |
+| 项目级 `.vscode` 仍指向 `C:\Espressif` | 打开项目报找不到工具；检查项目 `.vscode/settings.json` 的 `idf.*` 是否误写 C 盘，改 D 盘或删除让全局生效（详见 5.7） |
+| `idf-use 5.4.3` 报「未安装版本」 | 目标版本没装或目录不完整；`idf-use -List` 看已装列表，缺版本跑 `bootstrap.ps1 -Only 20` |
+| 切版本后编译报 CMake/链接错乱 | `build/` 是上一版生成的；`idf.py fullclean` 后重编（详见 5.8 三条硬约束） |
+| `idf.py --version` 与 `idf-use -List` 标的不一致 | 之前在别的窗口激活过旧版本；在当前窗口重跑 `idf-use <版本>`，它会先剔旧 PATH 再激活 |
+| 装了新版本但 VSCode 看不到 | EIM 记录写到了 `C:\Espressif\tools\eim_idf.json`；确认 `%APPDATA%\Code\User\settings.json` 的 `idf.eimIdfJsonPath` 指向 `D:\Dev\esp\tools\eim_idf.json`，并把记录合并过去（步骤 20 已显式传 `--esp-idf-json-path`） |
+| `eim install` 报 `git clone failed (exit code 128)` | 直连 GitHub 被断；改用国内镜像参数（见 5.8 安装命令） |
 
 ---
 
 ## 九、换机流程
 
-1. 从本仓库取 `bootstrap.ps1`，放到新机用户主目录 `%USERPROFILE%`；
+1. 从本仓库取 `bootstrap.ps1` **与 `idf-use.ps1`**，两个文件都放到新机用户主目录 `%USERPROFILE%`（步骤 21 要把切换器复制到该目录并注册 `idf-use` 别名）；
 2. 执行一次 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force`；
 3. 按第三节注册 `$PROFILE` 别名（不注册则用 `.\bootstrap.ps1`）；
 4. `bootstrap.ps1 -List` 看清单 → `bootstrap.ps1 -All`；
-5. 完成人工步骤 11–15（工具链、驱动、SSH 凭据、代码仓库）；
-6. `bootstrap.ps1 -Only 16` 复核校验表。
+5. 如需多版本：`bootstrap.ps1 -Only 20`（6.0.2 + 5.4.3）→ `bootstrap.ps1 -Only 21`（装切换器）；
+6. 完成人工步骤 11–15（工具链、驱动、SSH 凭据、代码仓库）；
+7. `bootstrap.ps1 -Only 16` 复核校验表；`idf-use -List` 确认版本清单。
 
 若新机没有 D 盘：
 
