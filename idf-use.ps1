@@ -123,28 +123,30 @@ function Clear-IdfSession {
         if (Test-Path -LiteralPath $deact) {
             try { & $deact } catch { }
         }
-        Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+        [System.Environment]::SetEnvironmentVariable('VIRTUAL_ENV', $null, 'Process')
     }
 
     # 2) 清 PATH 中所有 ESP-IDF 工具条目
     Remove-EspPathEntries -Root $Root
 
     # 3) 清 IDF_* / ESP_* 变量
+    #    用 .NET API 而不是 Remove-Item Env: —— 后者在变量不存在时会被安全策略 fail-closed 拦下。
     foreach ($v in @(
         'IDF_PATH', 'IDF_TOOLS_PATH', 'IDF_PYTHON_ENV_PATH',
         'IDF_COMPONENT_LOCAL_STORAGE_URL', 'IDF_CCACHE_ENABLE',
         'ESP_IDF_VERSION', 'IDF_VERSION',
-        'ESP_ROM_ELF_DIR', 'OPENOCD_SCRIPTS', 'ESP_CLANG_LIBS_PATH'
+        'ESP_ROM_ELF_DIR', 'OPENOCD_SCRIPTS', 'ESP_CLANG_LIBS_PATH',
+        'VIRTUAL_ENV'
     )) {
-        Remove-Item "Env:$v" -ErrorAction SilentlyContinue
+        [System.Environment]::SetEnvironmentVariable($v, $null, 'Process')
     }
 
-    # 4) 移除激活脚本注册的函数与别名
+    # 4) 移除激活脚本注册的函数与别名（先判断存在，避免 not-found 被拦）
     foreach ($fn in @('Invoke-idfpy', 'esptool', 'esptool.py', 'espefuse', 'espefuse.py',
                       'espsecure', 'espsecure.py', 'otatool.py', 'parttool.py')) {
-        Remove-Item "Function:\$fn" -ErrorAction SilentlyContinue
+        if (Test-Path "Function:\$fn") { Remove-Item "Function:\$fn" -ErrorAction SilentlyContinue }
     }
-    Remove-Item 'Alias:idf.py' -ErrorAction SilentlyContinue
+    if (Test-Path 'Alias:idf.py') { Remove-Item 'Alias:idf.py' -ErrorAction SilentlyContinue }
 }
 
 function Resolve-EimExe {
@@ -226,8 +228,17 @@ if ($Current) {
     if ($env:IDF_PATH) {
         $py = if ($env:IDF_PYTHON_ENV_PATH) { Join-Path $env:IDF_PYTHON_ENV_PATH 'Scripts\python.exe' } else { $null }
         if ($py -and (Test-Path -LiteralPath $py)) {
-            $ver = & $py (Join-Path $env:IDF_PATH 'tools\idf.py') --version 2>&1 | Select-Object -First 1
-            Write-Host ("  idf.py --version : {0}" -f $ver) -ForegroundColor Green
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $ver = & $py (Join-Path $env:IDF_PATH 'tools\idf.py') --version 2>&1 |
+                       Where-Object { $_ -match 'ESP-IDF v' } | Select-Object -First 1
+                Write-Host ("  idf.py --version : {0}" -f $(if ($ver) { $ver } else { '<执行失败，检查上面输出>' })) -ForegroundColor Green
+            } catch {
+                Write-Host '  idf.py --version : <执行失败>' -ForegroundColor Yellow
+            } finally {
+                $ErrorActionPreference = $prevEap
+            }
         }
     }
     Write-Host ''
@@ -275,18 +286,34 @@ if (-not $env:IDF_PATH) {
 }
 
 # 保险：EIM 激活脚本会把 IDF_TOOLS_PATH 写成本版本工具目录（...\tools），
-# 但 idf_tools.py 约定工具在 $IDF_TOOLS_PATH\tools 下，容器根才是正确值。
+# 但 idf_tools.py（EIM 的 tools.json 用 tools/<工具名> 前缀）要求容器根，否则 export 报 no installed versions。
 $env:IDF_TOOLS_PATH = $EspRoot
+
+# 补齐 constraints：idf.py 在 $IDF_TOOLS_PATH 根目录找 espidf.constraints.v<版本>.txt，
+# 而 EIM 把该文件放在 $IDF_TOOLS_PATH\tools\ 下。缺了会报
+# "espidf.constraints.vX.Y.txt doesn't exist. Perhaps you've forgotten to run the install scripts"。
+foreach ($c in (Get-ChildItem -LiteralPath (Join-Path $EspRoot 'tools') -Filter 'espidf.constraints.*.txt' -File -ErrorAction SilentlyContinue)) {
+    $dstFile = Join-Path $EspRoot $c.Name
+    if (-not (Test-Path -LiteralPath $dstFile)) {
+        try { Copy-Item -LiteralPath $c.FullName -Destination $dstFile -Force } catch { }
+    }
+}
 
 # 同步 EIM 选中项，让 VSCode ESP-IDF 扩展 / eim list 指向同一版本
 $eim = Resolve-EimExe -Root $EspRoot
 if ($eim) {
+    # 原生命令写 stderr 时，在 $ErrorActionPreference='Stop' 下会变成 terminating error，
+    # 这里局部放宽，避免 eim 的任何提示文字中断切换。
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
-        & $eim select $target.Name 2>$null | Out-Null
+        & $eim select $target.Name 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) { Write-Host "  已同步 eim select $($target.Name)" -ForegroundColor DarkGray }
         else { Write-Host "  eim select $($target.Name) 返回 $LASTEXITCODE（不影响当前会话）" -ForegroundColor DarkGray }
     } catch {
-        Write-Host '  eim select 跳过（eim 不可用）' -ForegroundColor DarkGray
+        Write-Host '  eim select 跳过（eim 调用失败）' -ForegroundColor DarkGray
+    } finally {
+        $ErrorActionPreference = $prevEap
     }
 }
 
