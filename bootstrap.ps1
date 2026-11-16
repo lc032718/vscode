@@ -152,10 +152,12 @@ $Steps = @(
 $Extensions = @(
     'ms-vscode.cpptools'
     'ms-vscode.cmake-tools'
-    'twxs.cmake'
     'espressif.esp-idf-extension'
     'ms-vscode.hexeditor'
     'eamodio.gitlens'
+    'mhutchie.git-graph'                       # Git 提交图谱（SCM 增强）
+    'donjayamanne.githistory'                  # Git 文件/提交历史查看（SCM 增强）
+    'github.vscode-pull-request-github'        # GitHub PR / Issue 管理（SCM 增强）
     'ms-vscode.powershell'
     'ms-python.python'
     'redhat.vscode-yaml'
@@ -165,15 +167,18 @@ $Extensions = @(
     'ms-ceintl.vscode-language-pack-zh-hans'   # VSCode 中文（简体）语言包
     'tencent-cloud.coding-copilot'             # 腾讯云代码助手 CodeBuddy（WorkBuddy 是独立客户端，无 VSCode 插件）
 )
+# 注：不含 twxs.cmake —— 官方已弃用（deprecated），CMake Tools 已内置 CMake 语言服务，装了会弹「建议卸载」。
 
 # 插件用途对照：只用于 -List 展示，安装仍按 $Extensions 顺序执行
 $ExtensionLabels = @{
     'ms-vscode.cpptools'                     = 'C/C++ 智能提示与调试'
-    'ms-vscode.cmake-tools'                  = 'CMake 构建集成'
-    'twxs.cmake'                             = 'CMake 语法高亮'
+    'ms-vscode.cmake-tools'                  = 'CMake 构建集成（含 CMake 语言服务）'
     'espressif.esp-idf-extension'            = 'ESP-IDF 开发（编译/烧录/监视）'
     'ms-vscode.hexeditor'                    = '二进制 / 固件十六进制查看'
     'eamodio.gitlens'                        = 'Git 行级溯源与提交对比'
+    'mhutchie.git-graph'                     = 'Git 提交图谱（分支/合并可视化）'
+    'donjayamanne.githistory'                = 'Git 文件 / 提交历史查看'
+    'github.vscode-pull-request-github'      = 'GitHub PR / Issue 管理'
     'ms-vscode.powershell'                   = 'PowerShell 语言与调试支持'
     'ms-python.python'                       = 'Python 语言支持'
     'redhat.vscode-yaml'                     = 'YAML 语法校验'
