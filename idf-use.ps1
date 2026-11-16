@@ -15,6 +15,11 @@
 .PARAMETER Version
     目标版本，可写 5.4.3 / v5.4.3 / 6.0.2 / v6.0.2 / 6.1 / v6.1。
 
+.PARAMETER EspRoot
+    ESP-IDF 容器根（其下为 v<版本>\esp-idf 与共享的 tools\），默认 D:\Dev\esp。
+    一般不用传：脚本会按 参数 > IDF_USE_ROOT > IDF_TOOLS_PATH > IDF_PATH 反推 > eim_idf.json > D:\Dev\esp
+    的顺序自动定位，因此换机改了安装盘（bootstrap.ps1 -WorkspaceRoot）也能直接用。
+
 .PARAMETER List
     列出本机已安装的所有 ESP-IDF 版本，并标出当前会话在用哪个。
 
@@ -48,15 +53,95 @@ param(
     [switch]$Current,
     [switch]$SessionOnly,
     [switch]$Default,
-    [string]$EspRoot = 'D:\Dev\esp'
+    # 留空 = 自动探测（见 Resolve-EspRoot）；仅在自动探测失效时才需要手动指定
+    [string]$EspRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ---------------------------------------------------------------- 容器根定位
+# 跨机可移植性的关键：不能把 D:\Dev\esp 写死。
+# bootstrap.ps1 支持 -WorkspaceRoot 换盘（无 D 盘的新机），一旦写死，切换器在新机全部失效。
+# 探测顺序（命中第一个「确实是 ESP 容器根」的候选即止）：
+#   1) 显式 -EspRoot
+#   2) $env:IDF_USE_ROOT（bootstrap.ps1 步骤 21 写入 $PROFILE 的实际容器根，换机改盘时最可靠）
+#   3) $env:IDF_TOOLS_PATH（约定就是容器根）
+#   4) $env:IDF_PATH 反推：<根>\v<版本>\esp-idf → 取两级父目录
+#   5) eim_idf.json 的 idfInstalled[].idfToolsPath（D 盘副本与 C 盘默认位置都看）
+#   6) 兜底 D:\Dev\esp（保持旧机行为，找不到时至少给出有意义的报错路径）
+function Test-EspRoot {
+    param([string]$Path)
+
+    if (-not $Path) { return $false }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+    return [bool](Get-ChildItem -LiteralPath $Path -Directory -ErrorAction SilentlyContinue |
+                  Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'esp-idf\tools\idf_tools.py') } |
+                  Select-Object -First 1)
+}
+
+function Get-JsonField {
+    param([string]$JsonPath, [string]$Field)
+
+    if (-not (Test-Path -LiteralPath $JsonPath)) { return $null }
+    try {
+        $j = Get-Content -LiteralPath $JsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($Field -eq 'idfToolsPath') {
+            $rec = @($j.idfInstalled) | Where-Object { $_.idfToolsPath } | Select-Object -First 1
+            if ($rec) { return $rec.idfToolsPath }
+        }
+    } catch { }
+    return $null
+}
+
+function Resolve-EspRoot {
+    param([string]$Explicit)
+
+    if ($Explicit) { return $Explicit.TrimEnd('\') }
+
+    # profile 由 bootstrap.ps1 写入的实际容器根：换机改了安装盘时，这是唯一不依赖其它环境变量的来源
+    if ($env:IDF_USE_ROOT -and (Test-EspRoot -Path $env:IDF_USE_ROOT)) {
+        return $env:IDF_USE_ROOT.TrimEnd('\')
+    }
+
+    $cands = New-Object System.Collections.Generic.List[string]
+    if ($env:IDF_TOOLS_PATH) {
+        $t = $env:IDF_TOOLS_PATH.TrimEnd('\')
+        $cands.Add($t)
+        # EIM 激活脚本会把 IDF_TOOLS_PATH 写成 ...\tools；此时容器根是它的父目录
+        if ([System.IO.Path]::GetFileName($t) -ieq 'tools') { $cands.Add((Split-Path -Parent $t)) }
+    }
+    if ($env:IDF_PATH) {
+        $idf = $env:IDF_PATH.TrimEnd('\')
+        if ([System.IO.Path]::GetFileName($idf) -ieq 'esp-idf') {
+            $cands.Add((Split-Path -Parent (Split-Path -Parent $idf)))
+        }
+    }
+    $jsonCands = New-Object System.Collections.Generic.List[string]
+    if ($env:IDF_TOOLS_PATH) { $jsonCands.Add((Join-Path $env:IDF_TOOLS_PATH 'eim_idf.json')) }
+    $jsonCands.Add('D:\Dev\esp\tools\eim_idf.json')
+    $jsonCands.Add('C:\Espressif\tools\eim_idf.json')
+    foreach ($j in $jsonCands) {
+        $p = Get-JsonField -JsonPath $j -Field 'idfToolsPath'
+        if ($p) { $cands.Add($p.TrimEnd('\')) }
+    }
+    $cands.Add('D:\Dev\esp')
+
+    foreach ($c in $cands) {
+        if (Test-EspRoot -Path $c) { return $c }
+    }
+    return 'D:\Dev\esp'
+}
+
+$EspRoot = Resolve-EspRoot -Explicit $EspRoot
 
 # ---------------------------------------------------------------- 工具函数
 
 function Get-IdfVersions {
     param([string]$Root)
+
+    # 先判存在：驱动器/路径不存在时 Get-ChildItem 的 -Directory 动态参数会直接报
+    # 「找不到与参数名称 Directory 匹配的参数」，比「没装版本」更难懂。
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return }
 
     $dirs = Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue |
             Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'esp-idf\tools\idf_tools.py') }
@@ -103,12 +188,15 @@ function Remove-EspPathEntries {
     )
 
     $out = New-Object System.Collections.Generic.List[string]
+    # 只有容器根不在 C:\Espressif 下时，才把 C:\Espressif 条目当「迁移前残留」剔除；
+    # 否则会把当前要激活的环境自己删掉（换机后若确实装在 C 盘，也不该被清）。
+    $killLegacy = -not ((Join-Path $Root 'tools').ToLower().StartsWith('c:\espressif'))
     foreach ($entry in ($env:PATH -split ';')) {
         if ([string]::IsNullOrWhiteSpace($entry)) { continue }
         $n = $entry.TrimEnd('\').ToLower()
         if ($keep -contains $n) { $out.Add($entry); continue }
-        if ($n.StartsWith($prefix)) { continue }             # D:\Dev\esp\tools\... 全部剔除
-        if ($n.StartsWith('c:\espressif')) { continue }       # 迁移前的 C 盘残留
+        if ($n.StartsWith($prefix)) { continue }             # <容器根>\tools\... 全部剔除
+        if ($killLegacy -and $n.StartsWith('c:\espressif')) { continue }
         $out.Add($entry)
     }
     $env:PATH = ($out -join ';')
@@ -159,15 +247,17 @@ function Resolve-EimExe {
             if ($j.eimPath -and (Test-Path -LiteralPath $j.eimPath)) { return $j.eimPath }
         } catch { }
     }
+    # 先信 PATH（换机后 eim 可能是任意安装位置），再退到几个常见落点
+    $cmd = Get-Command eim -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
     foreach ($p in @(
-        'D:\Program Files\EIM\eim.exe',
         (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\eim.exe'),
+        (Join-Path $env:ProgramFiles 'EIM\eim.exe'),
+        'D:\Program Files\EIM\eim.exe',
         (Join-Path $env:USERPROFILE '.espressif\eim\eim.exe')
     )) {
         if ($p -and (Test-Path -LiteralPath $p)) { return $p }
     }
-    $cmd = Get-Command eim -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
     return $null
 }
 
@@ -187,6 +277,7 @@ $versions = @(Get-IdfVersions -Root $EspRoot)
 if ($versions.Count -eq 0) {
     Write-Warning "在 $EspRoot 下没有找到任何 ESP-IDF 安装（应有 <版本>\esp-idf\tools\idf_tools.py）。"
     Write-Host '  先执行：bootstrap.ps1 -Only 17（最新版）或 -Only 20（6.0.2 / 5.4.3）' -ForegroundColor Yellow
+    Write-Host '  若装在别的盘：idf-use -List -EspRoot <容器根>，或重跑 bootstrap.ps1 -Only 21 重新部署切换器' -ForegroundColor Yellow
     return
 }
 
@@ -289,6 +380,17 @@ if (-not $env:IDF_PATH) {
 # 但 idf_tools.py（EIM 的 tools.json 用 tools/<工具名> 前缀）要求容器根，否则 export 报 no installed versions。
 $env:IDF_TOOLS_PATH = $EspRoot
 
+# EIM 生成的激活脚本里路径是正反斜杠混用（D:/Dev/esp\tools\python\...）。
+# 部分工具按字符串比对路径，混用会误报：
+#   WARNING: Python interpreter "..." used to start idf.py is not from installed venv "..."
+# 这里统一成正斜杠转反斜杠，不改变语义、只消除误判。
+foreach ($v in @('IDF_PATH', 'IDF_PYTHON_ENV_PATH', 'IDF_TOOLS_PATH')) {
+    $val = [System.Environment]::GetEnvironmentVariable($v, 'Process')
+    if ($val) {
+        [System.Environment]::SetEnvironmentVariable($v, $val.Replace('/', '\'), 'Process')
+    }
+}
+
 # 补齐 constraints：idf.py 在 $IDF_TOOLS_PATH 根目录找 espidf.constraints.v<版本>.txt，
 # 而 EIM 把该文件放在 $IDF_TOOLS_PATH\tools\ 下。缺了会报
 # "espidf.constraints.vX.Y.txt doesn't exist. Perhaps you've forgotten to run the install scripts"。
@@ -307,8 +409,11 @@ if ($eim) {
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $eim select $target.Name 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { Write-Host "  已同步 eim select $($target.Name)" -ForegroundColor DarkGray }
+        # 必须显式 --esp-idf-json-path：eim 的 list/select 默认读写 C:\Espressif\tools\eim_idf.json，
+        # 而 VSCode 扩展读的是 idf.eimIdfJsonPath 钉死的 D 盘那份。
+        # 不指定就会出现「终端切了版本、IDE 仍认为旧版本」（实测 select 只改 C 盘、D 盘纹丝不动）。
+        & $eim select $target.Name --esp-idf-json-path (Join-Path $EspRoot 'tools') 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Host "  已同步 eim select $($target.Name)（写入 $EspRoot\tools\eim_idf.json）" -ForegroundColor DarkGray }
         else { Write-Host "  eim select $($target.Name) 返回 $LASTEXITCODE（不影响当前会话）" -ForegroundColor DarkGray }
     } catch {
         Write-Host '  eim select 跳过（eim 调用失败）' -ForegroundColor DarkGray

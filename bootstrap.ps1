@@ -320,13 +320,27 @@ function Invoke-Verify {
 
     # ESP-IDF：EIM 只在激活脚本 / 桌面快捷方式里注入 IDF_PATH，不会写系统环境变量，
     # 所以只读 $env:IDF_PATH 必然误报 FAIL。改为按目录扫已安装的框架。
+    # 多版本下要列全：只显示第一个版本会让人误以为「只装了那一版」，也看不出 eim 当前选中谁。
     $espRoot = Join-Path $WorkspaceRoot 'esp'
-    $idfDir = Get-ChildItem -LiteralPath $espRoot -Directory -ErrorAction SilentlyContinue |
-              Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'esp-idf\tools\idf_tools.py') } |
-              Select-Object -First 1
+    $idfDirs = @(Get-ChildItem -LiteralPath $espRoot -Directory -ErrorAction SilentlyContinue |
+                 Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'esp-idf\tools\idf_tools.py') } |
+                 Sort-Object Name)
+    $idfSelName = ''
+    $eimJsonChk = Join-Path $espRoot 'tools\eim_idf.json'
+    if (Test-Path -LiteralPath $eimJsonChk) {
+        try {
+            $jChk = Get-Content -LiteralPath $eimJsonChk -Raw -Encoding UTF8 | ConvertFrom-Json
+            $selRec = @($jChk.idfInstalled) | Where-Object { $_.id -eq $jChk.idfSelectedId } | Select-Object -First 1
+            if ($selRec) { $idfSelName = $selRec.name }
+        } catch { }
+    }
+    $idfDetail = if ($idfDirs.Count -gt 0) {
+        $names = @($idfDirs | ForEach-Object { if ($_.Name -eq $idfSelName) { "$($_.Name)（选中）" } else { $_.Name } })
+        "$espRoot 已装 $($idfDirs.Count) 个：$($names -join ' / ')"
+    } else { "$espRoot 下未找到已装版本（步骤 17）" }
     $idfTools = Get-ChildItem -LiteralPath (Join-Path $espRoot 'tools') -Directory -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -match 'xtensa|riscv|cmake|ninja' } | Select-Object -First 1
-    [void]$r.Add([pscustomobject]@{ Item = 'ESP-IDF 框架'; Status = $(if ($idfDir) { 'PASS' } else { 'FAIL' }); Detail = $(if ($idfDir) { $idfDir.FullName } else { "$espRoot 下未找到已装版本（步骤 17）" }) })
+    [void]$r.Add([pscustomobject]@{ Item = 'ESP-IDF 框架'; Status = $(if ($idfDirs.Count -gt 0) { 'PASS' } else { 'FAIL' }); Detail = $idfDetail })
     [void]$r.Add([pscustomobject]@{ Item = 'ESP-IDF 工具链'; Status = $(if ($idfTools) { 'PASS' } else { 'FAIL' }); Detail = $(if ($idfTools) { "$espRoot\tools 已落地" } else { "$espRoot\tools 未找到（旧版脚本会误落 C:\Espressif）" }) })
 
     # Qt：装到 D 盘但未必加了 PATH，按目录扫 qmake.exe / mingw32-make.exe，不只看 Get-Command
@@ -688,12 +702,9 @@ foreach ($s in $ordered) {
                      Sort-Object Name | Select-Object -Last 1
             $pyBin = if ($pyDir) { Join-Path $pyDir.FullName 'venv\Scripts\python.exe' } else { $null }
             if (-not ($pyBin -and (Test-Path -LiteralPath $pyBin))) {
-                Write-Warning "    未找到 ESP-IDF 自带 Python venv（$pyBin）；仍写入 idf.toolsPath/idf.espIdfPath，pythonBinPath 跳过。"
+                Write-Warning "    未找到 ESP-IDF 自带 Python venv（$pyBin）；仍写入 idf.customExtraVars，pythonBinPath 跳过。"
                 $pyBin = $null
             }
-            # 探测 EIM 激活脚本（文件名含版本号，动态取，避免写死 v6.x）
-            $eimProfile = Get-ChildItem -LiteralPath (Join-Path $espRoot 'tools') -Filter 'Microsoft.*PowerShell_profile.ps1' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-            $eimProfilePath = if ($eimProfile) { $eimProfile.FullName } else { (Join-Path $espRoot 'tools\Microsoft.v6.1.PowerShell_profile.ps1') }
             # 修复 eim_idf.json：迁移到 D 盘后，安装记录里的 idfToolsPath/python/activationScript 仍指向已删的 C:\Espressif，
             # 扩展 2.3.0 把 idfToolsPath 1:1 当 IDF_TOOLS_PATH 传给 idf_tools.py export，错值会致 cmake not found。
             # 注：idfToolsPath 必须是容器根（如 D:\Dev\esp），不是 D:\Dev\esp\tools（后者反而 no installed versions）。
@@ -758,6 +769,8 @@ foreach ($s in $ordered) {
             # 读/合并 VSCode 全局 settings.json（保留已有键，不覆盖整个文件）
             # 兼容 PowerShell 5.1：不用 -AsHashtable（5.1 不支持会报参数错误），改用 PSCustomObject + Add-Member -Force
             $vsSettings = Join-Path $env:APPDATA 'Code\User\settings.json'
+            $vsDir = Split-Path -Parent $vsSettings
+            if (-not (Test-Path -LiteralPath $vsDir)) { New-Item -ItemType Directory -Force -Path $vsDir | Out-Null }
             $obj = $null
             if (Test-Path -LiteralPath $vsSettings) {
                 try { $obj = Get-Content -LiteralPath $vsSettings -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $obj = $null }
@@ -769,7 +782,15 @@ foreach ($s in $ordered) {
             # 多版本共存：只钉「共享」的 IDF_TOOLS_PATH（所有版本共用一个工具根），
             # 刻意不钉 IDF_PATH / IDF_PYTHON_ENV_PATH —— 它们必须随 eim_idf.json 的选中版本变化，
             # 一旦钉死就会把所有项目锁在同一版本，idf-use 切版本也随之失效。
+            # 合并而非整体替换：用户可能自建了其它 customExtraVars（例如 IDF_CCACHE_ENABLE），
+            # 整体覆盖会静默清掉它们。只有 IDF_TOOLS_PATH 这一项由脚本掌管。
             $customVars = New-Object PSObject
+            $prevVars = $obj.PSObject.Properties['idf.customExtraVars']
+            if ($prevVars -and $prevVars.Value) {
+                foreach ($p in $prevVars.Value.PSObject.Properties) {
+                    $customVars | Add-Member -MemberType NoteProperty -Name $p.Name -Value $p.Value -Force
+                }
+            }
             $customVars | Add-Member -MemberType NoteProperty -Name 'IDF_TOOLS_PATH' -Value $espRoot -Force
             $obj | Add-Member -MemberType NoteProperty -Name 'idf.customExtraVars' -Value $customVars -Force
             # 清掉 2.3.0 已不读的旧键，避免误以为它们是「当前版本」而手改错（多版本下尤其误导）
@@ -781,11 +802,12 @@ foreach ($s in $ordered) {
             if (-not $obj.'terminal.integrated.profiles.windows') {
                 $obj | Add-Member -MemberType NoteProperty -Name 'terminal.integrated.profiles.windows' -Value (New-Object PSObject) -Force
             }
-            # 终端 profile 走 idf-use -Default：按 eim_idf.json 的选中版本激活，不再写死某一版
+            # 终端 profile 走 idf-use -Default：按 eim_idf.json 的选中版本激活，不再写死某一版。
+            # 显式带 -EspRoot：换机用 -WorkspaceRoot 改盘时，新终端不必依赖 IDF_TOOLS_PATH 等环境变量先就位。
             $idfUseScript = Join-Path $env:USERPROFILE 'idf-use.ps1'
             $obj.'terminal.integrated.profiles.windows' | Add-Member -MemberType NoteProperty -Name 'ESP-IDF' -Value @{
                 source = 'PowerShell'
-                args   = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $idfUseScript, '-Default')
+                args   = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $idfUseScript, '-Default', '-EspRoot', $espRoot)
             } -Force
             [System.IO.File]::WriteAllText($vsSettings, ($obj | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
             Write-Ok "已钉 idf.customExtraVars: IDF_TOOLS_PATH=$espRoot（共享工具根；IDF_PATH/venv 由 eim 选中版本决定）"
@@ -867,6 +889,7 @@ foreach ($s in $ordered) {
             $dstFull = [System.IO.Path]::GetFullPath($dst)
             if ($srcFull -ieq $dstFull) {
                 Write-Host "    切换器已在目标位置，跳过复制：$dst" -ForegroundColor DarkGray
+                Write-Host '    提示：当前运行的就是用户目录副本；仓库更新后想在用户目录生效，请在仓库目录再跑一次 -Only 21。' -ForegroundColor DarkGray
             } else {
                 Copy-Item -LiteralPath $src -Destination $dst -Force
                 Write-Ok "已部署切换器：$dst"
@@ -877,22 +900,31 @@ foreach ($s in $ordered) {
             $profilePath = $PROFILE
             $profileDir = Split-Path -Parent $profilePath
             if (-not (Test-Path -LiteralPath $profileDir)) { New-Item -ItemType Directory -Force -Path $profileDir | Out-Null }
-            $marker = '# ESP-IDF multi-version switcher (bootstrap step 21)'
+            # v2：额外把实际容器根写进 $env:IDF_USE_ROOT。
+            # 原因：Set-Alias 无法携带参数，换机用 -WorkspaceRoot 改盘后 idf-use 无法靠参数得知新根，
+            # 而新机在步骤 19/20 之前没有用户级 IDF_TOOLS_PATH 可探测 —— 会误判「没有安装」。
+            $marker = '# ESP-IDF multi-version switcher (bootstrap step 21) v2'
+            $markerV1 = '# ESP-IDF multi-version switcher (bootstrap step 21)'
             $existing = if (Test-Path -LiteralPath $profilePath) { Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 } else { '' }
             if ($existing -notmatch [regex]::Escape($marker)) {
+                # 旧版（v1）块是追加在文件末尾的，先整段裁掉再写 v2，避免两段并存/重复注册
+                $idx = $existing.IndexOf($markerV1)
+                if ($idx -ge 0) { $existing = $existing.Substring(0, $idx) }
+                $espRootForProfile = Join-Path $WorkspaceRoot 'esp'
                 $block = @"
 
 $marker
 `$idfUseScript = Join-Path `$env:USERPROFILE 'idf-use.ps1'
+`$env:IDF_USE_ROOT = '$espRootForProfile'
 if (Test-Path -LiteralPath `$idfUseScript) {
     Set-Alias -Name 'idf-use' -Value `$idfUseScript -Scope Global -Force
 }
 "@
-                $merged = $existing.TrimEnd() + "`r`n" + $block + "`r`n"
+                $merged = $existing.TrimEnd() + "`r`n" + (($block -replace "`r`n", "`n") -replace "`n", "`r`n") + "`r`n"
                 [System.IO.File]::WriteAllText($profilePath, $merged, (New-Object System.Text.UTF8Encoding($true)))
-                Write-Ok "已在 $profilePath 注册 idf-use 别名（UTF-8 BOM 保存）"
+                Write-Ok "已在 $profilePath 注册 idf-use 别名 + IDF_USE_ROOT=$espRootForProfile（UTF-8 BOM 保存）"
             } else {
-                Write-Host "    $profilePath 已注册 idf-use，跳过。" -ForegroundColor DarkGray
+                Write-Host "    $profilePath 已注册 idf-use（v2），跳过。" -ForegroundColor DarkGray
             }
             Write-Host '    重开终端后可直接敲：idf-use -List / idf-use 5.4.3 / idf-use -Current' -ForegroundColor DarkGray
         }

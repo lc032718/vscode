@@ -10,8 +10,8 @@
 
 | 项目 | 说明 |
 |---|---|
-| 交付物 | `bootstrap.ps1`（唯一可执行脚本，自包含，不依赖同目录任何文件） |
-| 驱动方式 | 脚本顶部 `$Steps` 编号清单（当前 18 步），脚本按清单逐项执行 |
+| 交付物 | `bootstrap.ps1`（主脚本，自包含，不依赖同目录任何文件）+ `idf-use.ps1`（ESP-IDF 多版本切换器，步骤 21 部署） |
+| 驱动方式 | 脚本顶部 `$Steps` 编号清单（当前 21 步），脚本按清单逐项执行 |
 | 软件版本 | **不钉版本号**，winget / EIM / aqt 自动取最新稳定版，重复执行幂等 |
 | 适用系统 | Windows 10/11，Windows PowerShell 5.1 或 PowerShell 7 |
 | 人工收尾 | 步骤 11–15（工具链、驱动、SSH 凭据、代码仓库）只打印操作，不自动执行 |
@@ -343,6 +343,10 @@ ESP-IDF 激活后由 EIM 注入环境变量。**多版本共存的关键是分�
 | `IDF_PATH` | `D:\Dev\esp\v<版本>\esp-idf` | 是 |
 | `IDF_PYTHON_ENV_PATH` | `D:\Dev\esp\tools\python\v<版本>\venv` | 是 |
 | `PATH` | 各版激活脚本注入自己所需的工具版本目录 | 是（切换时先剔除旧条目） |
+| `IDF_USE_ROOT` | `D:\Dev\esp`（步骤 21 写进 `$PROFILE`，只给 `idf-use` 定位容器根用） | 否；换盘时由 `-WorkspaceRoot` 重写 |
+
+> `IDF_USE_ROOT` 是**给切换器自己的**定位变量，不参与 ESP-IDF 构建；
+> 它解决的是「`Set-Alias` 不能带参数」导致换盘后 `idf-use` 找不到根的问题。
 
 Qt 需把 `D:\Dev\tools\Qt\Tools\mingw*\bin` 与 `D:\Dev\tools\Qt\<版本>\mingw_64\bin` 加入 PATH。
 
@@ -396,7 +400,7 @@ ESP-IDF 扩展 **2.3.0 已移除** `idf.espIdfPath` / `idf.toolsPath` / `idf.pyt
     "terminal.integrated.profiles.windows": {
         "ESP-IDF": {
             "source": "PowerShell",
-            "args": ["-NoExit", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<用户名>\\idf-use.ps1", "-Default"]
+            "args": ["-NoExit", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\<用户名>\\idf-use.ps1", "-Default", "-EspRoot", "D:\\Dev\\esp"]
         }
     }
 }
@@ -405,8 +409,12 @@ ESP-IDF 扩展 **2.3.0 已移除** `idf.espIdfPath` / `idf.toolsPath` / `idf.pyt
 > **多版本注意**：`idf.customExtraVars` 里**只放 `IDF_TOOLS_PATH`**（三版共享的工具根）。
 > 千万不要把 `IDF_PATH` / `IDF_PYTHON_ENV_PATH` 也钉进去——那会把所有项目锁死在同一个版本，
 > `idf-use` 切版本、`eim select` 都会失效（详见 5.8）。`IDF_PATH` 由 `eim_idf.json` 的选中版本决定。
-> 终端 profile 用 `idf-use -Default` 而不是写死某个 `Microsoft.v<版本>.PowerShell_profile.ps1`，切版本后自动跟随。
-> 其中 `<用户名>` 由 `bootstrap.ps1 -Only 19` 自动替换为真实的 `%USERPROFILE%` 绝对路径（VSCode 的 args 不展开 `%VAR%`）。
+> 终端 profile 用 `idf-use -Default` 而不是写死某个 `Microsoft.v<版本>.PowerShell_profile.ps1`，切版本后自动跟随；
+> 末尾的 `-EspRoot` 是显式容器根，换机改盘（`-WorkspaceRoot`）时新终端不依赖任何环境变量先就位。
+> 其中 `<用户名>` 与 `D:\\Dev\\esp` 由 `bootstrap.ps1 -Only 19` 自动替换为真实绝对路径（VSCode 的 args 不展开 `%VAR%`）。
+
+> **写入语义**：步骤 19 对 `idf.customExtraVars` 是**合并**而非整体替换——你自己加的
+> `IDF_CCACHE_ENABLE` 等键会保留，只有 `IDF_TOOLS_PATH` 由脚本掌管。重复执行不会越写越乱。
 
 - **备份 — EIM 安装记录 `eim_idf.json`**：扩展还会从 `idf.eimIdfJsonPath`（本机指向 `D:\Dev\esp\tools\eim_idf.json`）
   或默认回退位置 `C:\Espressif\tools\eim_idf.json` 读 `idfToolsPath`。两份都要保证 `idfToolsPath` 为容器根
@@ -465,7 +473,20 @@ idf-use 5.4.3                 # 切换：当前会话生效 + 持久化（新终
 idf-use v6.0.2 -SessionOnly   # 只切当前会话，不动用户级环境变量
 idf-use -Current              # 查看 IDF_PATH / venv / cmake / python / idf.py 版本
 idf-use -Default              # 回到 eim 选中的版本（VSCode 终端 profile 用这个）
+idf-use -List -EspRoot E:\Dev\esp   # 容器根不在默认位置时手动指定
 ```
+
+**容器根怎么找（跨机关键）**：切换器**不写死** `D:\Dev\esp`，按下列顺序取第一个「确实是 ESP 容器根」
+（该目录下存在 `v*\esp-idf\tools\idf_tools.py`）的候选：
+
+1. 命令行 `-EspRoot`；
+2. `$env:IDF_USE_ROOT` —— 步骤 21 写进 `$PROFILE` 的实际容器根（换机改盘时最可靠）；
+3. `$env:IDF_TOOLS_PATH`（约定就是容器根；若被写成 `...\tools` 会取其父目录）；
+4. `$env:IDF_PATH` 反推（`<根>\v<版本>\esp-idf` 往上两级）；
+5. `eim_idf.json` 里各安装记录的 `idfToolsPath`（D 盘副本与 `C:\Espressif\tools` 都看）；
+6. 兜底 `D:\Dev\esp`。
+
+因此换机后用 `-WorkspaceRoot E:\Dev` 搭建，`idf-use` 依然开箱可用，无需改脚本。
 
 切换动作（全部在同一会话内完成，无需重开终端）：
 
@@ -475,8 +496,12 @@ idf-use -Default              # 回到 eim 选中的版本（VSCode 终端 profi
 4. dot-source 目标版本的 `Microsoft.v<版本>.PowerShell_profile.ps1`；
 5. 把 `IDF_TOOLS_PATH` 纠正为容器根 `D:\Dev\esp`（EIM 激活脚本会写成本版本 `...\tools`，层级不对）；
 6. 把 `tools\espidf.constraints.v<版本>.txt` 补一份到容器根（见下方「路径层级坑」）；
-7. `eim select <版本>` 同步 `eim_idf.json`，VSCode ESP-IDF 扩展随之切换；
-8. 默认写用户级持久变量（`IDF_PATH` / `IDF_PYTHON_ENV_PATH` / `ESP_IDF_VERSION` / `IDF_VERSION`），让新终端也落在同一版。
+7. `eim select <版本> --esp-idf-json-path <容器根>\tools` 同步 `eim_idf.json`，VSCode ESP-IDF 扩展随之切换
+   （**必须带这个参数**：eim 默认只写 `C:\Espressif\tools\`，扩展读的却是 D 盘那份，不带就会出现「终端切了、IDE 没切」）；
+8. 把 `IDF_PATH` / `IDF_PYTHON_ENV_PATH` / `IDF_TOOLS_PATH` 里的正反斜杠统一成 `\`
+   （EIM 激活脚本写成 `D:/Dev/esp\tools\...` 混用，`idf.py` 按字符串比对会误报
+   `Python interpreter ... is not from installed venv`，纯噪声）；
+9. 默认写用户级持久变量（`IDF_PATH` / `IDF_PYTHON_ENV_PATH` / `ESP_IDF_VERSION` / `IDF_VERSION`），让新终端也落在同一版。
 
 **路径层级坑（实测，必须知道）**
 
@@ -530,7 +555,12 @@ Qt 装到 D 盘也可能没加 PATH，只看环境变量会误报 FAIL。
 
 ---
 
-## 七、本次优化记录（基于 2026-11-14 全量 `-All` 实测日志）
+## 七、修复经验档案（现象 → 根因 → 修复）
+
+本章是新机排障的第一入口：每条都写明**真实现象**、**实测根因**、**落在哪个脚本步骤/小节**。
+按「先看现象对不对」查，避免凭猜测改配置。
+
+### 7.1 已修复问题总表
 
 | 级别 | 实测现象 | 根因 | 修复 |
 |---|---|---|---|
@@ -547,15 +577,46 @@ Qt 装到 D 盘也可能没加 PATH，只看环境变量会误报 FAIL。
 | 🔴 P0 | `eim install -i v6.0.2,v5.4.3` 报 `git clone failed (exit code 128)` / `schannel: server closed abruptly` | 直连 GitHub clone 被中断（国内网络） | 安装加 `--idf-mirror https://git.espressif.com.cn --repo-stub Espressif/esp-idf -m https://dl.espressif.cn/github_assets`，clone 与工具下载都走国内镜像 |
 | 🟠 P1 | EIM 安装记录默认写 `C:\Espressif\tools\eim_idf.json`，与 D 盘那份分裂 | EIM 的 `--esp-idf-json-path` 默认值是 `C:\Espressif\tools` | 步骤 20 显式传 `--esp-idf-json-path D:\Dev\esp\tools`，安装后校验记录落地并检查 C 盘残留 |
 
-### 实测依据
+### 7.2 跨机可移植性加固（2026-11-16 全流程审核）
+
+把「本机能跑」变成「换机能跑」时审核出的断点，全部已修：
+
+| 编号 | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| 🔴 P0 | 换机用 `-WorkspaceRoot E:\Dev` 搭建后，`idf-use` 一律报「没有找到任何 ESP-IDF 安装」 | `idf-use.ps1` 的 `$EspRoot` 默认值写死 `D:\Dev\esp`；`Set-Alias` 无法携带参数，别名永远用默认值 | 改为多级自动探测（`-EspRoot` → `IDF_USE_ROOT` → `IDF_TOOLS_PATH` → `IDF_PATH` 反推 → `eim_idf.json` → 兜底），并在步骤 21 把实际容器根写进 `$PROFILE` 的 `IDF_USE_ROOT`（见 5.8） |
+| 🟠 P1 | 步骤 19 修完 VSCode 终端 profile 后，新机首次打开终端仍是旧盘路径 | 终端 profile 只传 `-Default`，容器根靠环境变量推断，而新机此时还没有用户级 `IDF_TOOLS_PATH` | 步骤 19 在 args 里显式追加 `-EspRoot <实际容器根>`；步骤 21 同时写 `IDF_USE_ROOT` 双保险 |
+| 🟠 P1 | 手改过 `idf.customExtraVars`（例如加了 `IDF_CCACHE_ENABLE`）的机器，跑完步骤 19 那些键消失 | 原实现新建空对象整体 `Add-Member -Force` 覆盖 | 改为先复制既有键、再只覆盖 `IDF_TOOLS_PATH`（合并语义，见 5.7） |
+| 🟠 P1 | 指定不存在的容器根时，报 `找不到与参数名称"Directory"匹配的参数`，与「没装版本」完全无关 | 目标盘符不存在时 `Get-ChildItem` 的 `-Directory` 是 FileSystem provider 动态参数，不可用 → 参数绑定失败；`$ErrorActionPreference='Stop'` 直接终止 | `Get-IdfVersions` 先 `Test-Path` 判存在；不存在则走友好提示（列已装版本 + 提示 `-EspRoot`） |
+| 🟡 P2 | 每次 `idf.py` 都打印 `WARNING: Python interpreter ... is not from installed venv ...` | EIM 激活脚本里路径正反斜杠混用（`D:/Dev/esp\tools\...`），`idf.py` 按字符串比对 venv 路径判不相等 | 切换后把 `IDF_PATH` / `IDF_PYTHON_ENV_PATH` / `IDF_TOOLS_PATH` 统一为 `\`，警告消失、语义不变 |
+| 🟡 P2 | 容器根若真装在 `C:\Espressif`，切版本时会被当成「迁移残留」清掉 PATH | `Remove-EspPathEntries` 无条件剔除 `c:\espressif` 开头的条目 | 仅当容器根不在 `C:\Espressif` 下才剔除（`$killLegacy`） |
+| 🟡 P2 | 步骤 21 反复执行后 `$PROFILE` 里可能残留新旧两段别名块 | 幂等判断只认单一 marker 文本 | marker 升到 `... step 21) v2`，发现旧 v1 块先整段裁掉再写；写入统一 CRLF |
+| 🔵 P3 | `bootstrap.ps1` 里有一个定义了但从未使用的 `$eimProfilePath` | 早期版本遗留（曾计划写 `idf.espIdfPath`，2.3.0 移除该键后废弃） | 删除死代码，避免误导后来者以为要配激活脚本路径 |
+| 🔴 P0 | `idf-use 5.4.3` 后终端确实是 5.4.3，但 VSCode 的 ESP-IDF 扩展仍按**旧版本**编译 | `eim select` 不带 `--esp-idf-json-path` 时固定读写 `C:\Espressif\tools\eim_idf.json`，而扩展读 `idf.eimIdfJsonPath` 钉死的 D 盘那份 → 两份记录分叉（实测：C 盘 mtime 变了，D 盘纹丝不动） | 切换器调用改为 `eim select <版本> --esp-idf-json-path <容器根>\tools`，直写 D 盘那份；终端与 IDE 从此一致 |
+
+### 7.3 设计决策备忘（改动前先读，避免回退）
+
+| 决策 | 原因（实测） | 不要做什么 |
+|---|---|---|
+| `IDF_TOOLS_PATH` 恒为**容器根** `D:\Dev\esp` | `idf_tools.py` 的 `tools.json` 目录名自带 `tools/` 前缀；给 `...\tools` 会拼成 `tools\tools` → `no installed versions` | 不要为了「让 `idf.py` 找到 constraints」把 `IDF_TOOLS_PATH` 改成 `...\tools`；正解是复制 constraints 到根 |
+| `idf.customExtraVars` 只钉 `IDF_TOOLS_PATH` | 钉死 `IDF_PATH` 会把所有项目锁在同一版本，`idf-use` / `eim select` 失效 | 不要为了「让某个项目编译」把 `IDF_PATH` 塞进 customExtraVars；用项目级 `.vscode` 或 `idf-use` |
+| 多版本共用工具根、框架分目录 | 工具按 `名称\版本号` 子目录并存（cmake 3.30.2 与 4.0.3、gcc 14.2.0 与 15.2.0 实测共存） | 不要给每个版本单独 `IDF_TOOLS_PATH`，会重复下载数 GB |
+| 安装一律带国内镜像 | 直连 GitHub 实测 `git clone failed (exit code 128)` / `schannel: server closed abruptly` | 不要图省事去掉 `--idf-mirror` / `-m` |
+| 脚本内不写死盘符与用户名 | 换机可能无 D 盘、用户名不同 | 不要把 `D:\Dev\esp`、`C:\Users\licong` 写进逻辑（注释/兜底候选除外） |
+| 仓库 `bootstrap.ps1` + `idf-use.ps1` 成对同步 | 曾经用 C 盘旧版覆盖仓库文件，丢掉 3 个 SCM 插件；用户目录副本与仓库不同步时「改了没生效」 | 不要只改一边；从仓库目录跑 `-Only 21` 才会把新版复制到用户目录 |
+| `$PROFILE` 用 UTF-8 **BOM** 写 | PS 5.1 无 BOM 时按 ANSI 解析，中文注释变乱码 | 不要用 `Out-File -Encoding utf8`（5.1 默认带 BOM，但 `Set-Content` 不带，容易翻车） |
+| `eim_idf.json` 同步方向是**单向**的 | 步骤 19：D→C（eim CLI 默认读 C 盘，需要看到安装记录）；`idf-use`：`eim select --esp-idf-json-path` 直写 D 盘 | 不要写成「双向全量覆盖」，会把对方刚写的记录/选中项冲掉 |
+
+### 7.4 实测依据
 
 - `aqt install-qt ... --dry-run`：6.12.0 / 6.11.3 / 6.11.2 → `exit=1 Failed to locate XML data`；6.10.3 → `exit=0 Total packages: 8`
 - 国内镜像 `mirrors.aliyun.com/qt/`、`mirrors.tuna.tsinghua.edu.cn/qt/` → `exit=0`
 - 6.10.3 dry-run 输出中的 MinGW runtime：`MinGW-w64-x86_64-13.1.0` → 对应 `tools_mingw1310`
 - `eim_idf.json` 实测：迁移后 `idfToolsPath` 残留 `C:\Espressif\tools`、`python` 残留 `C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe`（已修正为 `D:\Dev\esp` / `D:\Dev\esp\tools\...`）；`idfToolsPath` 必须是容器根 `D:\Dev\esp`（`D:\Dev\esp\tools` 反而会 "no installed versions"）
+- `eim select v6.1` 实测（2026-11-16）：不带 `--esp-idf-json-path` 时只有 `C:\Espressif\tools\eim_idf.json` 的 mtime 变化、选中变 v6.1，`D:\Dev\esp\tools\eim_idf.json` 仍停留在 v5.4.3；加上 `--esp-idf-json-path D:\Dev\esp\tools` 后两份同步为 v6.1，`bootstrap.ps1 -Only 16` 的「（选中）」标记随之正确
+- 容器根自适应实测：清空 `IDF_TOOLS_PATH` / `IDF_PATH` 后 `idf-use -List` 仍能从 `eim_idf.json` 定位到 `D:\Dev\esp`；`-EspRoot Z:\nope` 给出友好提示而非参数绑定错误
 - `idf_tools.py export` 实测：`IDF_TOOLS_PATH=D:\Dev\esp` 时 EXIT=0 正确导出全部工具 PATH；**为空/未设**会回退 `~/.espressif` 报 `ERROR: tool cmake has no installed versions`（exit 1），这正是 VSCode 扩展报错、`cmake not found` 的根源。修复靠 `idf.customExtraVars.IDF_TOOLS_PATH`（优先级最高，覆盖为空）
 
-### C 盘残留迁移指引（本次 10.42 GB）
+### 7.5 C 盘残留迁移指引（本次 10.42 GB）
 
 脚本**不会自动删除** `C:\Espressif`，需要人工确认后处理：
 
@@ -587,28 +648,85 @@ Qt 装到 D 盘也可能没加 PATH，只看环境变量会误报 FAIL。
 | `idf.py --version` 与 `idf-use -List` 标的不一致 | 之前在别的窗口激活过旧版本；在当前窗口重跑 `idf-use <版本>`，它会先剔旧 PATH 再激活 |
 | 装了新版本但 VSCode 看不到 | EIM 记录写到了 `C:\Espressif\tools\eim_idf.json`；确认 `%APPDATA%\Code\User\settings.json` 的 `idf.eimIdfJsonPath` 指向 `D:\Dev\esp\tools\eim_idf.json`，并把记录合并过去（步骤 20 已显式传 `--esp-idf-json-path`） |
 | `eim install` 报 `git clone failed (exit code 128)` | 直连 GitHub 被断；改用国内镜像参数（见 5.8 安装命令） |
+| `idf.py` 每次打印 `WARNING: Python interpreter ... is not from installed venv` | EIM 激活脚本里路径正反斜杠混用导致误判；`idf-use` 已统一为 `\`。若仍出现，说明当前会话是手动 dot-source 激活脚本而非 `idf-use`，改用 `idf-use <版本>` |
+| `idf-use` 报「没有找到任何 ESP-IDF 安装」但目录明明在 | 容器根探测失败；`idf-use -List -EspRoot <根>` 直接指定。换机改盘场景重跑 `bootstrap.ps1 -Only 21` 写入 `IDF_USE_ROOT` 后即恢复 |
+| `idf-use` 报「找不到与参数名称 Directory 匹配的参数」 | 传入的容器根所在盘符不存在（如 `Z:`）；检查 `-EspRoot` 或 `$env:IDF_USE_ROOT` |
+| 从仓库改了 `idf-use.ps1` 但终端行为没变 | 步骤 21 部署的是 `%USERPROFILE%\idf-use.ps1`；在仓库目录执行 `bootstrap.ps1 -Only 21` 覆盖，再重开终端 |
+| 换机用 `-WorkspaceRoot E:\Dev` 后 VSCode 编译找不到工具 | 重跑 `bootstrap.ps1 -Only 19`（重钉 `IDF_TOOLS_PATH` 与终端 `-EspRoot`）+ `-Only 21`（重写 `IDF_USE_ROOT`），然后重启 VSCode |
+| `idf-use` 切了版本，但 VSCode 里编译用的还是旧版 | `eim select` 默认只改 `C:\Espressif\tools\eim_idf.json`；确认切换器输出里有「写入 `D:\Dev\esp\tools\eim_idf.json`」。旧版脚本需重跑 `bootstrap.ps1 -Only 21` 部署新版 |
+| `eim list` 与 `idf-use -List` 选中项不一致 | 同上，两份 `eim_idf.json` 分叉；用 `eim list --esp-idf-json-path D:\Dev\esp\tools` 对齐查看 |
 
 ---
 
 ## 九、换机流程
 
-1. 从本仓库取 `bootstrap.ps1` **与 `idf-use.ps1`**，两个文件都放到新机用户主目录 `%USERPROFILE%`（步骤 21 要把切换器复制到该目录并注册 `idf-use` 别名）；
-2. 执行一次 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force`；
-3. 按第三节注册 `$PROFILE` 别名（不注册则用 `.\bootstrap.ps1`）；
-4. `bootstrap.ps1 -List` 看清单 → `bootstrap.ps1 -All`；
-5. 如需多版本：`bootstrap.ps1 -Only 20`（6.0.2 + 5.4.3）→ `bootstrap.ps1 -Only 21`（装切换器）；
-6. 完成人工步骤 11–15（工具链、驱动、SSH 凭据、代码仓库）；
-7. `bootstrap.ps1 -Only 16` 复核校验表；`idf-use -List` 确认版本清单。
+> 目标：一台干净 Windows 从零到「能编译 ESP 项目、能切 IDF 版本」，中途不需要猜配置。
+> 全程只用本仓库两个文件，不依赖旧机上的任何状态。
 
-若新机没有 D 盘：
+**9.1 准备（5 分钟）**
+
+1. 从本仓库取 `bootstrap.ps1` **与 `idf-use.ps1`**，两个文件放同一目录；
+   - 想让「裸命令」可用：两个都放到 `%USERPROFILE%`；
+   - 想让「仓库更新能落盘」：两个都放在仓库目录，步骤 21 会复制到 `%USERPROFILE%`（推荐，二选一即可）；
+2. 执行一次 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force`；
+3. 按第三节注册 `$PROFILE` 的 `bootstrap.ps1` 别名（不注册就用 `.\bootstrap.ps1`，功能完全一样）。
+
+**9.2 执行**
+
+```powershell
+bootstrap.ps1 -List                 # 先看清单，确认 20/21 步在列
+bootstrap.ps1 -All                  # 1–19 步（含插件、Git、目录、ESP-IDF 集成、Qt）
+bootstrap.ps1 -Only 20              # 多版本：v6.0.2 + v5.4.3（数 GB，建议单跑）
+bootstrap.ps1 -Only 21              # 部署 idf-use 切换器 + 写 IDF_USE_ROOT
+bootstrap.ps1 -Only 16              # 冒烟校验
+```
+
+**9.3 人工步骤 11–15**（工具链安装器、USB 驱动、SSH 凭据、克隆仓库）——脚本只打印指引，不会代做。
+
+**9.4 无 D 盘的新机**
 
 ```powershell
 bootstrap.ps1 -InstallRoot "E:\Program Files" -WorkspaceRoot "E:\Dev" -All
 ```
 
+此时所有脚本自动跟随：步骤 19 的 `idf.customExtraVars.IDF_TOOLS_PATH`、
+步骤 20 的安装根、步骤 21 写入 `$PROFILE` 的 `IDF_USE_ROOT`、终端 profile 的 `-EspRoot`
+全部是 `E:\Dev\esp`，**不需要手改任何文件**。装完按第十章清单逐项验证即可。
+
+**9.5 从旧机迁移（已有 D 盘环境）**
+
+只需迁移两样**不可再生**的东西：SSH 私钥、未推送的仓库改动。
+其余（工具链、venv、Qt、IDE 插件）全部重装，比搬迁更可靠——`venv` 与激活脚本里含绝对路径，跨机搬过去必坏。
+
 ---
 
-## 十、维护方式
+## 十、跨机验收清单
+
+新机搭完后逐条执行，**全部 PASS 才算搭建完成**。这套清单是本次审核的落地结论，
+覆盖了此前所有「本机能跑、换机就崩」的环节。
+
+| # | 命令 | PASS 条件 | 对应坑 |
+|---|---|---|---|
+| 1 | `bootstrap.ps1 -Only 16` | 无 FAIL；`C:\Espressif` 若有只报 WARN | 校验逻辑只认目录实扫 |
+| 2 | `idf-use -List` | 列出预期版本（如 6.1 / 6.0.2 / 5.4.3），每行都有 `venv` + `激活脚本` | `$EspRoot` 探测、venv 缺失 |
+| 3 | `idf-use 5.4.3 ; idf.py --version` | 输出 `ESP-IDF v5.4.3`，**无** `not from installed venv` 警告 | 路径正反斜杠混用 |
+| 4 | `idf-use 6.1 ; idf.py --version` | 输出 `ESP-IDF v6.1` | 切版本残留污染 |
+| 5 | `idf-use -Current` | `IDF_TOOLS_PATH` 为**容器根**（如 `D:\Dev\esp`），不是 `...\tools` | 路径层级冲突 |
+| 6 | `idf-use 5.4.3 ; cmake --version` | 3.30.x（v5.4.3 侧）；`idf-use 6.1` 后应为 4.0.x | 工具链未真正跟随版本切换 |
+| 7 | `eim list --esp-idf-json-path D:\Dev\esp\tools` | 三个版本均为 `[ok]`，选中项与 `idf-use -List` 的 `*` 一致 | `eim_idf.json` 分裂 |
+| 8 | 看 `%APPDATA%\Code\User\settings.json` | 有 `idf.customExtraVars.IDF_TOOLS_PATH` 与 `idf.eimIdfJsonPath`；**没有** `idf.espIdfPath` / `idf.toolsPath` | 配了 2.3.0 已失效的旧键 |
+| 9 | VSCode 打开 ESP 项目 → Build | 能完成 configure + build，不再报 `cmake was not found` | `idf_tools.py export` 失败根因 |
+| 10 | VSCode 终端选「ESP-IDF」profile | 打开即已激活正确版本，`idf.py --version` 可用 | 终端 profile 未带 `-EspRoot` |
+| 11 | `Get-Content $PROFILE -Tail 6` | 含 `IDF_USE_ROOT = '<实际容器根>'` 与 `idf-use` 别名 | 换盘后切器找不到根 |
+| 12 | `git config --global user.email` | 非空且为自己邮箱 | Git 全局配置丢失 |
+| 13 | 串口 `PuTTY` + 设备管理器 | 有 COM 口，能读到板子日志 | 驱动未装 |
+
+> 第 3/4 步如果恰好落在「已激活版本」，`idf.py --version` 仍会响应——**不要只看它**，
+> 第 6 步的 `cmake` 版本差异才证明「工具链真的跟着切了」。
+
+---
+
+## 十一、维护方式
 
 清单、插件、Git 配置、校验逻辑**全部内联在 `bootstrap.ps1`**，没有外部依赖文件。
 
@@ -619,3 +737,12 @@ bootstrap.ps1 -InstallRoot "E:\Program Files" -WorkspaceRoot "E:\Dev" -All
 | 改 Git 配置 | `$GitSettings` 数组 |
 | 临时不装某项 | 该步 `enabled = $false` |
 | 改安装盘 | `-InstallRoot` / `-WorkspaceRoot` 参数，脚本内无第二套路径 |
+| 加/减 IDF 版本 | 步骤 20 的 `idfVersions` 数组（如加 `v6.0.3`） |
+| 改切换器逻辑 | `idf-use.ps1`（仓库与 `%USERPROFILE%` 成对同步；改完在仓库跑 `-Only 21` 部署） |
+| 排查历史坑 | 第七章「修复经验档案」按现象查；改动前先读 7.3「设计决策备忘」 |
+
+维护铁律：
+
+1. **两个脚本必须成对提交**——`bootstrap.ps1` 与 `idf-use.ps1` 任一方改动，提交前确认另一方没被旧版覆盖（出过事）。
+2. **不要写死盘符/用户名到逻辑里**——兜底候选与注释可以写，功能路径必须走参数或探测。
+3. **改完必跑三件事**：语法检查、`-Only 16` 校验、第十章验收清单第 2–7 条。
