@@ -11,7 +11,7 @@
 | 项目 | 说明 |
 |---|---|
 | 交付物 | `bootstrap.ps1`（主脚本，自包含，不依赖同目录任何文件）+ `idf-use.ps1`（ESP-IDF 多版本切换器，步骤 21 部署） |
-| 驱动方式 | 脚本顶部 `$Steps` 编号清单（当前 21 步），脚本按清单逐项执行 |
+| 驱动方式 | 脚本顶部 `$Steps` 编号清单（当前 22 步），脚本按清单逐项执行 |
 | 软件版本 | **不钉版本号**，winget / EIM / aqt 自动取最新稳定版，重复执行幂等 |
 | 适用系统 | Windows 10/11，Windows PowerShell 5.1 或 PowerShell 7 |
 | 人工收尾 | 步骤 11–15（工具链、驱动、SSH 凭据、代码仓库）只打印操作，不自动执行 |
@@ -79,8 +79,8 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
 
 | 指令 | 作用 |
 |---|---|
-| `bootstrap.ps1 -List` | 查看 21 步清单 + 16 个插件明细 + 安装规则 + 指令表 |
-| `bootstrap.ps1 -All` | **安装所有**：执行全部 21 步 |
+| `bootstrap.ps1 -List` | 查看 22 步清单 + 16 个插件明细 + 安装规则 + 指令表 |
+| `bootstrap.ps1 -All` | **安装所有**：执行全部 22 步 |
 | `bootstrap.ps1` | 同 `-All` |
 | `bootstrap.ps1 -Only 1,2,3` | 只跑指定步骤（单步写 `-Only 17`） |
 | `bootstrap.ps1 -Only 16` | 单独跑冒烟校验 |
@@ -131,8 +131,10 @@ bootstrap.ps1 -Only 16         # 复核校验表
 | 19 | 配置 VSCode ESP-IDF 集成路径 | 写 VSCode settings | `idf.*` 钉到 `D:\Dev\esp` | 打开 ESP 项目能编译（见 5.7） |
 | 20 | ESP-IDF 多版本 6.0.2 / 5.4.3 | `eim install -i` | `D:\Dev\esp\v6.0.2`、`v5.4.3`（共享 `tools`） | `idf-use -List` 三个版本（见 5.8） |
 | 21 | IDF 版本切换器 `idf-use` | 复制脚本 + `$PROFILE` 别名 | `%USERPROFILE%\idf-use.ps1` | `idf-use 5.4.3` 后 `idf.py --version` |
+| 22 | Node.js LTS（npm 目录落 D 盘） | winget + `npm config` | `D:\Program Files\nodejs`；npm 全局/缓存 → `D:\Dev\tools` | `node --version`；`npm config get prefix` 在 D 盘 |
 
-> 执行顺序是 1→15 → 17 → 18 → 19 → 20 → 21 → 16：追加步骤后冒烟校验仍强制排最后，保证校验结果准确。
+> 执行顺序是 1→15 → 17 → 18 → 19 → 20 → 21 → 22 → 16：追加步骤后冒烟校验仍强制排最后，保证校验结果准确。
+> 步骤 22（Node.js）独立无依赖，赶时间可先单跑 `-Only 22`，不必等 ESP-IDF / Qt 那几步。
 
 ### 前三步的具体流程
 
@@ -313,11 +315,14 @@ D:\Program Files\          # 软件本体
   ├─ 7-Zip\
   ├─ Python312\
   ├─ PuTTY\
+  ├─ nodejs\               # Node.js LTS（含 npm / npx）
   ├─ EIM\
   └─ aqtinstall\
 D:\Dev\                    # 工具链 / 仓库 / 数据
   ├─ repos\                # 代码仓库
   ├─ tools\Qt\             # Qt 库 + MinGW + Qt Creator
+  ├─ tools\npm-global\     # npm 全局包（npm config prefix）
+  ├─ tools\npm-cache\      # npm 缓存（npm config cache）
   ├─ esp\                  # ESP-IDF 根（多版本共存）
   │   ├─ eim-config.toml   #   EIM 配置：路径全部钉 D 盘
   │   ├─ v6.1\esp-idf\     #   最新版（步骤 17）
@@ -530,6 +535,55 @@ idf-use 6.0.2 ; idf.py --version      # 期望 ESP-IDF v6.0.2
 idf-use 6.1   ; idf.py --version      # 期望 ESP-IDF v6.1
 ```
 
+### 5.9 Node.js 与 npm（步骤 22）
+
+```powershell
+bootstrap.ps1 -Only 22      # 装 Node.js LTS + 把 npm 全局目录/缓存挪到 D 盘
+```
+
+**装什么、装哪里**
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| Node.js LTS（含 `npm` / `npx`） | `D:\Program Files\nodejs` | winget 包 `OpenJS.NodeJS.LTS`；实测该包是 **wix** 安装器，`--location` 生效，`C:\Program Files\nodejs` 不会产生目录 |
+| npm 全局包 | `D:\Dev\tools\npm-global` | `npm config set prefix`，写入用户级 `~\.npmrc` |
+| npm 缓存 | `D:\Dev\tools\npm-cache` | `npm config set cache`，同上 |
+
+为什么必须改 npm 目录：npm 默认 `prefix=%APPDATA%\npm`、`cache=%LOCALAPPDATA%\npm-cache`，
+全局装几个 CLI（`@vue/cli`、`typescript`、`pnpm` 等）就是几百 MB，直接落在 C 盘，违反安装规则。
+配置文件本身很小（`~\.npmrc` 两行），无法搬离用户目录，但**内容全部指向 D 盘**。
+
+**PATH 须知（重要）**
+
+脚本**不修改 PATH**（与 VSCode / Git 的处理一致）。因此：
+
+1. 装完重开终端，`node --version` 正常可用（Node MSI 会自己写系统 PATH）；
+2. 若机器上已有别的 `node`（WorkBuddy 内置、nvm、旧版安装），`node` 命中的**可能不是**这套。
+   步骤 22 结束时会打印实际命中的路径并提示，看到这条提示就说明需要调顺序：
+
+```
+注意：当前 PATH 里的 node 是 C:\Users\<你>\.workbuddy\binaries\node\versions\...\node.exe，
+      不是本步骤刚装的 D:\Program Files\nodejs\node.exe
+```
+
+3. 想让本方案这套优先，把 `D:\Program Files\nodejs` 在用户 PATH 里移到前面
+   （`系统属性 → 环境变量 → 用户变量 Path`，或 `nvm use` 接管）；
+4. 全局 CLI 装在 `D:\Dev\tools\npm-global`，它默认也不在 PATH：
+   - 临时用：`npx <命令>`；
+   - 长期用：把 `D:\Dev\tools\npm-global` 加入用户 PATH。
+
+**验证**
+
+```powershell
+node --version                                  # 期望 v26.x（以 winget 当时的 LTS 为准）
+& 'D:\Program Files\nodejs\node.exe' --version  # 确认本体版本，绕过 PATH 顺序
+npm config get prefix                           # 期望 D:\Dev\tools\npm-global
+npm config get cache                            # 期望 D:\Dev\tools\npm-cache
+```
+
+> 校验表（步骤 16）里的 **Node.js** 一行按「安装根目录实扫 `node.exe`」判定，并显示 npm prefix
+> 是否在 D 盘 —— 不受 PATH 顺序影响，能真实反映本方案有没有装到位。
+
 ---
 
 ## 六、冒烟校验
@@ -543,6 +597,7 @@ idf-use 6.1   ; idf.py --version      # 期望 ESP-IDF v6.1
 | ESP-IDF 框架 | 目录实扫 `D:\Dev\esp\v*\esp-idf\tools\idf_tools.py` |
 | ESP-IDF 多版本（步骤 20） | `idf-use -List` 能列出 6.0.2 / 5.4.3 / 最新版，各自有 venv 与激活脚本 |
 | ESP-IDF 工具链 | `D:\Dev\esp\tools` 下有 xtensa / riscv / cmake 等目录 |
+| Node.js（步骤 22） | `D:\Program Files\nodejs\node.exe` 存在，且 `npm config get prefix` 在 D 盘 |
 | Qt qmake / Qt MinGW | 目录实扫 `qmake.exe` / `mingw32-make.exe` |
 | VSCode 扩展 | 已装数 ≥ 清单 16 个 |
 | C 盘残留 | `C:\Espressif` 存在则 WARN，如实报告 |
@@ -576,6 +631,9 @@ Qt 装到 D 盘也可能没加 PATH，只看环境变量会误报 FAIL。
 | 🟠 P1 | 需求变成 6.0.2 / 5.4.3 / 最新版三版共存 | 单版本环境变量（`IDF_PATH`/venv/PATH）切版本会被上一版残留污染；`idf.customExtraVars` 若钉死 `IDF_PATH` 会把所有项目锁在同一版 | 框架按 `v<版本>` 分目录 + 共享工具根 + 每版独立 venv/激活脚本；新增 `idf-use` 切换器（剔除旧 PATH、纠正 `IDF_TOOLS_PATH`、`eim select` 同步、可选持久化）；`customExtraVars` 只留 `IDF_TOOLS_PATH`（详见 5.8） |
 | 🔴 P0 | `eim install -i v6.0.2,v5.4.3` 报 `git clone failed (exit code 128)` / `schannel: server closed abruptly` | 直连 GitHub clone 被中断（国内网络） | 安装加 `--idf-mirror https://git.espressif.com.cn --repo-stub Espressif/esp-idf -m https://dl.espressif.cn/github_assets`，clone 与工具下载都走国内镜像 |
 | 🟠 P1 | EIM 安装记录默认写 `C:\Espressif\tools\eim_idf.json`，与 D 盘那份分裂 | EIM 的 `--esp-idf-json-path` 默认值是 `C:\Espressif\tools` | 步骤 20 显式传 `--esp-idf-json-path D:\Dev\esp\tools`，安装后校验记录落地并检查 C 盘残留 |
+| 🟡 P2 | 重跑已装步骤时 winget 返回 `-1978335189`（0x8A15002B），脚本报「安装失败」 | 该码是 `PACKAGE_ALREADY_INSTALLED`：包已存在且无升级，winget 用非 0 退出码表达「什么都没做」 | 单独识别该码并输出「已安装且已是最新」，不再误报失败 |
+| 🟠 P1 | 装完 Node.js 后 `npm i -g` 的包和缓存都堆在 C 盘（`%APPDATA%\npm`、`%LOCALAPPDATA%\npm-cache`） | npm 默认 prefix/cache 就在用户漫游目录，与 Node 本体装哪无关 | 步骤 22 用 `npm config set prefix/cache` 指向 `D:\Dev\tools\npm-global` 与 `npm-cache`，写入用户级 `~\.npmrc`（详见 5.9） |
+| 🟡 P2 | `node --version` 显示的版本不是刚装的那个 | 机器上常有多个 node（WorkBuddy 内置、nvm、旧安装），PATH 先命中的不是本方案装的 | 步骤 22 结束打印实际命中的 `node.exe` 路径并提示调整 PATH 顺序；校验表按「安装根目录实扫」判定，不受 PATH 影响 |
 
 ### 7.2 跨机可移植性加固（2026-11-16 全流程审核）
 
@@ -674,10 +732,11 @@ Qt 装到 D 盘也可能没加 PATH，只看环境变量会误报 FAIL。
 **9.2 执行**
 
 ```powershell
-bootstrap.ps1 -List                 # 先看清单，确认 20/21 步在列
-bootstrap.ps1 -All                  # 1–19 步（含插件、Git、目录、ESP-IDF 集成、Qt）
+bootstrap.ps1 -List                 # 先看清单，确认 20/21/22 步在列
+bootstrap.ps1 -All                  # 全部 22 步（含插件、Git、目录、ESP-IDF 集成、Qt、Node）
 bootstrap.ps1 -Only 20              # 多版本：v6.0.2 + v5.4.3（数 GB，建议单跑）
 bootstrap.ps1 -Only 21              # 部署 idf-use 切换器 + 写 IDF_USE_ROOT
+bootstrap.ps1 -Only 22              # Node.js LTS + npm 目录落 D 盘（很小，-All 已含）
 bootstrap.ps1 -Only 16              # 冒烟校验
 ```
 
@@ -719,7 +778,8 @@ bootstrap.ps1 -InstallRoot "E:\Program Files" -WorkspaceRoot "E:\Dev" -All
 | 10 | VSCode 终端选「ESP-IDF」profile | 打开即已激活正确版本，`idf.py --version` 可用 | 终端 profile 未带 `-EspRoot` |
 | 11 | `Get-Content $PROFILE -Tail 6` | 含 `IDF_USE_ROOT = '<实际容器根>'` 与 `idf-use` 别名 | 换盘后切器找不到根 |
 | 12 | `git config --global user.email` | 非空且为自己邮箱 | Git 全局配置丢失 |
-| 13 | 串口 `PuTTY` + 设备管理器 | 有 COM 口，能读到板子日志 | 驱动未装 |
+| 13 | `node --version` / `npm config get prefix` | 版本与 winget 当时的 LTS 一致；prefix 为 `D:\Dev\tools\npm-global` | Node 未装或 npm 全局目录留在 C 盘 |
+| 14 | 串口 `PuTTY` + 设备管理器 | 有 COM 口，能读到板子日志 | 驱动未装 |
 
 > 第 3/4 步如果恰好落在「已激活版本」，`idf.py --version` 仍会响应——**不要只看它**，
 > 第 6 步的 `cmake` 版本差异才证明「工具链真的跟着切了」。
@@ -738,6 +798,8 @@ bootstrap.ps1 -InstallRoot "E:\Program Files" -WorkspaceRoot "E:\Dev" -All
 | 临时不装某项 | 该步 `enabled = $false` |
 | 改安装盘 | `-InstallRoot` / `-WorkspaceRoot` 参数，脚本内无第二套路径 |
 | 加/减 IDF 版本 | 步骤 20 的 `idfVersions` 数组（如加 `v6.0.3`） |
+| 换 Node 版本线 | 步骤 22 的 `id`：`OpenJS.NodeJS.LTS`（LTS）↔ `OpenJS.NodeJS`（Current） |
+| 改 npm 全局目录 | 步骤 22 的 `$npmGlobal` / `$npmCache`（默认 `$WorkspaceRoot\tools` 下） |
 | 改切换器逻辑 | `idf-use.ps1`（仓库与 `%USERPROFILE%` 成对同步；改完在仓库跑 `-Only 21` 部署） |
 | 排查历史坑 | 第七章「修复经验档案」按现象查；改动前先读 7.3「设计决策备忘」 |
 

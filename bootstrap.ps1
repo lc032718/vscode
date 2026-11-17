@@ -144,6 +144,10 @@ $Steps = @(
     @{ no = 21; title = '安装 IDF 版本切换器（idf-use）'; kind = 'idf-switch';
        detail = '把 idf-use.ps1 部署到用户目录并在 PowerShell $PROFILE 注册裸命令 idf-use：切换当前会话的 IDF_PATH / IDF_PYTHON_ENV_PATH / PATH，同步 eim_idf.json 选中版本供 IDE 使用，并按需持久化用户级环境变量。需先跑步骤 17（或 20）。';
        check = 'idf-use -List；idf-use 5.4.3 后 idf.py --version'; enabled = $true }
+    @{ no = 22; title = '安装 Node.js LTS（npm 全局目录落 D 盘）'; kind = 'winget'; id = 'OpenJS.NodeJS.LTS'; dir = 'nodejs';
+       detail = "winget 装 Node.js LTS；实测该包是 wix 安装器，--location 生效，本体落 $InstallRoot\nodejs（C:\Program Files\nodejs 不产生目录）。装完把 npm 的 prefix / cache 改到 $WorkspaceRoot\tools 下——默认是 %APPDATA%\npm 与 %LOCALAPPDATA%\npm-cache，全局包一多就把 C 盘吃掉。脚本不改 PATH，全局命令目录需手动加入（见 README 5.9）。";
+       postNode = $true;
+       check = 'node --version；npm config get prefix 应指向 D 盘'; enabled = $true }
 )
 
 # ============================================================
@@ -352,6 +356,33 @@ function Invoke-Verify {
     [void]$r.Add([pscustomobject]@{ Item = 'Qt qmake'; Status = $(if ($qtQmake) { 'PASS' } else { 'FAIL' }); Detail = $(if ($qtQmake) { $qtQmake.FullName } else { "$QtRoot 下未找到 qmake.exe（步骤 18 未成功）" }) })
     [void]$r.Add([pscustomobject]@{ Item = 'Qt MinGW'; Status = $(if ($qtMake) { 'PASS' } else { 'FAIL' }); Detail = $(if ($qtMake) { $qtMake.FullName } else { "$QtRoot 下未找到 mingw32-make.exe" }) })
 
+    # Node.js：PATH 里的 node 可能是 WorkBuddy / nvm / 其它版本，只看 Get-Command 会误判。
+    # 按「安装根目录实扫」判断本方案是否装到位，并顺带核对 npm 全局目录是否落在 D 盘。
+    $nodeExe = Join-Path $InstallRoot 'nodejs\node.exe'
+    $npmCmdChk = Join-Path $InstallRoot 'nodejs\npm.cmd'
+    $nodeOk = Test-Path -LiteralPath $nodeExe
+    $nodeVer = ''
+    $npmPrefix = ''
+    if ($nodeOk) {
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $nodeVer = (& $nodeExe --version 2>&1 | Select-Object -First 1)
+            if (Test-Path -LiteralPath $npmCmdChk) {
+                $npmPrefix = (& $npmCmdChk config get prefix 2>&1 | Select-Object -Last 1)
+            }
+        } catch { } finally { $ErrorActionPreference = $prevEap }
+    }
+    $nodeDetail = $null
+    if (-not $nodeOk) {
+        $nodeDetail = "$InstallRoot\nodejs 下未找到 node.exe（步骤 22）"
+    } elseif ($npmPrefix -and $npmPrefix.ToLower().StartsWith($WorkspaceRoot.ToLower())) {
+        $nodeDetail = "$nodeVer；npm prefix 在 D 盘"
+    } else {
+        $nodeDetail = "$nodeVer；npm prefix 仍在 C 盘：$npmPrefix"
+    }
+    [void]$r.Add([pscustomobject]@{ Item = 'Node.js'; Status = $(if ($nodeOk) { 'PASS' } else { 'FAIL' }); Detail = $nodeDetail })
+
     $codeExe = Resolve-Tool 'code' $codeFallback
     $n = 0
     if ($codeExe) { $n = @(& $codeExe --list-extensions 2>$null | Where-Object { $_ -and $_.Trim() }).Count }
@@ -496,6 +527,11 @@ foreach ($s in $ordered) {
                 $OutputEncoding = $oldOutput
             }
             if ($installExit -eq 0) { Write-Ok "$pkgId（未装则安装，已装则升到最新）" }
+            elseif ($installExit -eq -1978335189) {
+                # 0x8A15002B = APPINSTALLER_CLI_ERROR_PACKAGE_ALREADY_INSTALLED：
+                # 包已存在且无需升级，winget 用这个退出码表达「什么都没做」，不是失败。
+                Write-Ok "$pkgId 已安装且已是最新（winget 未做变更）"
+            }
             else { Write-Warning "    $pkgId 安装退出码 $installExit，详见上方 winget 输出判断是否真失败" }
             # 如实提示：--location 只对全新安装生效，不会把 C 盘已装的软件搬到 D 盘
             if (-not $s.noRelocate -and $target -and (Test-Path -LiteralPath $target)) {
@@ -537,6 +573,47 @@ foreach ($s in $ordered) {
                 & $tool @runArgs
                 if ($LASTEXITCODE -eq 0) { Write-Ok 'ESP-IDF 最新稳定版安装完成（全部产物在 D 盘）' }
                 else { Write-Warning "    $($s.postTool) 退出码 $LASTEXITCODE：检查上面的错误，或改用 eim wizard 交互安装" }
+            }
+            # Node.js 后处理：把 npm 的全局目录与缓存从 C 盘挪到 D 盘。
+            # npm 默认 prefix=%APPDATA%\npm、cache=%LOCALAPPDATA%\npm-cache，全局装几个 CLI 就是几百 MB。
+            # 这里写入用户级 .npmrc（npm config set 默认 --location=user），属性值指向 D 盘。
+            if ($s.postNode) {
+                $nodeExe = Join-Path $target 'node.exe'
+                $npmCmd  = Join-Path $target 'npm.cmd'
+                if ((Test-Path -LiteralPath $nodeExe) -and (Test-Path -LiteralPath $npmCmd)) {
+                    $npmGlobal = Join-Path $WorkspaceRoot 'tools\npm-global'
+                    $npmCache  = Join-Path $WorkspaceRoot 'tools\npm-cache'
+                    foreach ($d in @($npmGlobal, $npmCache)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+                    # npm 是 .cmd 包装的原生程序，stderr 有输出时在 Stop 模式下会抛异常，局部放宽
+                    $prevEap = $ErrorActionPreference
+                    $ErrorActionPreference = 'Continue'
+                    try {
+                        & $npmCmd config set prefix $npmGlobal --location=user 2>&1 | Out-Null
+                        & $npmCmd config set cache  $npmCache  --location=user 2>&1 | Out-Null
+                        $pNow = (& $npmCmd config get prefix 2>&1 | Select-Object -Last 1)
+                        $cNow = (& $npmCmd config get cache  2>&1 | Select-Object -Last 1)
+                        if ($pNow -and $cNow) {
+                            Write-Ok "npm prefix = $pNow"
+                            Write-Ok "npm cache  = $cNow"
+                        } else {
+                            Write-Warning '    npm config 读取失败：手动执行 npm config set prefix/cache 指向 D 盘'
+                        }
+                    } catch {
+                        Write-Warning "    配置 npm 目录失败：$_（可手动 npm config set prefix $npmGlobal）"
+                    } finally {
+                        $ErrorActionPreference = $prevEap
+                    }
+                    Write-Host "    提示：全局命令目录 $npmGlobal 未加入 PATH（脚本不改 PATH）；需要全局 CLI 时手动加入，或直接用 npx。" -ForegroundColor Yellow
+                    # 本机 PATH 里可能已有别的 node（WorkBuddy 内置 / nvm / 旧安装），先装的不一定先命中
+                    $pathNodeCmd = Get-Command node -ErrorAction SilentlyContinue
+                    $pathNode = if ($pathNodeCmd) { $pathNodeCmd.Source } else { '' }
+                    if ($pathNode -and (-not $pathNode.Equals($nodeExe, [System.StringComparison]::OrdinalIgnoreCase))) {
+                        Write-Host "    注意：当前 PATH 里的 node 是 $pathNode，不是本步骤刚装的 $nodeExe；" -ForegroundColor Yellow
+                        Write-Host "          要让新版本生效，把 $target 放到 PATH 中更靠前的位置（或移除前一个 node）。" -ForegroundColor Yellow
+                    }
+                } else {
+                    Write-Warning "    未找到 $nodeExe / npm.cmd：winget 可能把包装到了别处，检查 $target 是否为空。"
+                }
             }
         }
         'qt-aqt' {
