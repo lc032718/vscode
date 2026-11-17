@@ -54,6 +54,8 @@
 | 步骤 4 PowerShell 7、步骤 5 Windows Terminal | MSIX / Appx 包固定 `C:\Program Files\WindowsApps`，winget `--location` 无效 |
 | `winget --location` 对**已安装**软件 | 仅对全新安装生效，upgrade 不会把 C 盘已装软件迁移到 D 盘；要迁就先卸载再装 |
 | EIM 索引文件 `eim_idf.json` | 默认 `C:\Espressif\tools`，仅几 KB；迁走会让 `eim list` / `select` 等命令都得带额外参数，得不偿失 |
+| 步骤 22 会修改用户 PATH | npm 全局 CLI 目录（`D:\Dev\tools\npm-global`）不加 PATH 就敲不出来，npm 自己不会加。这是脚本**唯一**主动改 PATH 的地方：只追加自己一条目录、幂等去重、保留注册表值类型，不删改他人条目 |
+| `~\.npmrc`（npm 用户配置） | 配置文件本身很小且必须在用户目录，但**内容**（prefix / cache）全部指向 D 盘 |
 
 ---
 
@@ -555,22 +557,31 @@ bootstrap.ps1 -Only 22      # 装 Node.js LTS + 把 npm 全局目录/缓存挪�
 
 **PATH 须知（重要）**
 
-脚本**不修改 PATH**（与 VSCode / Git 的处理一致）。因此：
+| 目录 | 谁负责写进 PATH | 说明 |
+|---|---|---|
+| `D:\Program Files\nodejs` | Node 官方 MSI（写**机器** PATH） | 不用脚本管；装完新终端 `node` 就是 v26.x |
+| `D:\Dev\tools\npm-global` | **步骤 22 主动加入用户 PATH** | npm 自己不会加，不加则 `npm i -g` 装的 CLI 敲不出来 |
 
-1. 装完重开终端，`node --version` 正常可用（Node MSI 会自己写系统 PATH）；
-2. 若机器上已有别的 `node`（WorkBuddy 内置、nvm、旧版安装），`node` 命中的**可能不是**这套。
-   步骤 22 结束时会打印实际命中的路径并提示，看到这条提示就说明需要调顺序：
+> `npm-global` 是**脚本里唯一一处主动改 PATH** 的地方：只追加自己的一条目录、幂等去重、
+> 保留注册表原值类型（不会把 `REG_EXPAND_SZ` 降级），改完广播环境变量变更。
+> 其它工具仍遵循「脚本不改 PATH，靠安装器自己写」。
 
+**两个容易误判的现象**
+
+1. **在 IDE / 客户端内置终端里看到旧 node 版本**：某些客户端（如 WorkBuddy）会给自己启动的子进程
+   **前置注入**自己的 node 目录，这不是持久化配置。判断真实顺序要看注册表拼出来的 PATH：
+
+```powershell
+$pure = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+$env:PATH = $pure ; (Get-Command node).Source    # 这才是"新开一个普通终端"会命中的
 ```
-注意：当前 PATH 里的 node 是 C:\Users\<你>\.workbuddy\binaries\node\versions\...\node.exe，
-      不是本步骤刚装的 D:\Program Files\nodejs\node.exe
-```
 
-3. 想让本方案这套优先，把 `D:\Program Files\nodejs` 在用户 PATH 里移到前面
-   （`系统属性 → 环境变量 → 用户变量 Path`，或 `nvm use` 接管）；
-4. 全局 CLI 装在 `D:\Dev\tools\npm-global`，它默认也不在 PATH：
-   - 临时用：`npx <命令>`；
-   - 长期用：把 `D:\Dev\tools\npm-global` 加入用户 PATH。
+2. **旧机器上有 `C:\Users\<你>\AppData\Roaming\npm` 这类死路径**：那是 npm **旧**默认全局目录，
+   prefix 改到 D 盘后它已失效。留着会让「到底哪个 npm 目录生效」变得含糊，建议替换成
+   `D:\Dev\tools\npm-global`（本机已按此处理，原 PATH 备份在 `%USERPROFILE%\path-backup-<时间>.txt`）。
+
+若系统/用户 PATH 里确实还有别的 node 排在前面，步骤 22 会打印实际先命中的 `node.exe` 并提示调整顺序
+（只比对**持久化 PATH**，不会因为 IDE 注入而误报）。
 
 **验证**
 
@@ -579,6 +590,8 @@ node --version                                  # 期望 v26.x（以 winget 当�
 & 'D:\Program Files\nodejs\node.exe' --version  # 确认本体版本，绕过 PATH 顺序
 npm config get prefix                           # 期望 D:\Dev\tools\npm-global
 npm config get cache                            # 期望 D:\Dev\tools\npm-cache
+$env:PATH -split ';' -contains 'D:\Dev\tools\npm-global'   # 期望 True（新终端里）
+npm ls -g --depth=0                             # 全局包列表（刚装完为空属正常）
 ```
 
 > 校验表（步骤 16）里的 **Node.js** 一行按「安装根目录实扫 `node.exe`」判定，并显示 npm prefix
@@ -633,7 +646,8 @@ Qt 装到 D 盘也可能没加 PATH，只看环境变量会误报 FAIL。
 | 🟠 P1 | EIM 安装记录默认写 `C:\Espressif\tools\eim_idf.json`，与 D 盘那份分裂 | EIM 的 `--esp-idf-json-path` 默认值是 `C:\Espressif\tools` | 步骤 20 显式传 `--esp-idf-json-path D:\Dev\esp\tools`，安装后校验记录落地并检查 C 盘残留 |
 | 🟡 P2 | 重跑已装步骤时 winget 返回 `-1978335189`（0x8A15002B），脚本报「安装失败」 | 该码是 `PACKAGE_ALREADY_INSTALLED`：包已存在且无升级，winget 用非 0 退出码表达「什么都没做」 | 单独识别该码并输出「已安装且已是最新」，不再误报失败 |
 | 🟠 P1 | 装完 Node.js 后 `npm i -g` 的包和缓存都堆在 C 盘（`%APPDATA%\npm`、`%LOCALAPPDATA%\npm-cache`） | npm 默认 prefix/cache 就在用户漫游目录，与 Node 本体装哪无关 | 步骤 22 用 `npm config set prefix/cache` 指向 `D:\Dev\tools\npm-global` 与 `npm-cache`，写入用户级 `~\.npmrc`（详见 5.9） |
-| 🟡 P2 | `node --version` 显示的版本不是刚装的那个 | 机器上常有多个 node（WorkBuddy 内置、nvm、旧安装），PATH 先命中的不是本方案装的 | 步骤 22 结束打印实际命中的 `node.exe` 路径并提示调整 PATH 顺序；校验表按「安装根目录实扫」判定，不受 PATH 影响 |
+| 🟡 P2 | `node --version` 显示的版本不是刚装的那个 | 机器上常有多个 node（IDE 内置、nvm、旧安装），PATH 先命中的不是本方案装的；**IDE 还会给子进程前置注入自己的 node**，在 IDE 终端里看到的未必是真实配置 | 步骤 22 按「持久化 PATH（机器 + 用户）」模拟命中并提示，不会被注入误导；校验表按「安装根目录实扫」判定。查真实顺序的方法见 5.9 |
+| 🟡 P2 | 用户 PATH 里残留 `C:\Users\<你>\AppData\Roaming\npm` | 那是 npm **旧**默认全局目录，prefix 改到 D 盘后已成死路径，容易让人误判「哪个 npm 目录生效」 | 替换为 `D:\Dev\tools\npm-global`（本机已处理，原 PATH 备份在 `%USERPROFILE%\path-backup-<时间>.txt`）；步骤 22 幂等补加，不会重复 |
 
 ### 7.2 跨机可移植性加固（2026-11-16 全流程审核）
 
@@ -778,7 +792,7 @@ bootstrap.ps1 -InstallRoot "E:\Program Files" -WorkspaceRoot "E:\Dev" -All
 | 10 | VSCode 终端选「ESP-IDF」profile | 打开即已激活正确版本，`idf.py --version` 可用 | 终端 profile 未带 `-EspRoot` |
 | 11 | `Get-Content $PROFILE -Tail 6` | 含 `IDF_USE_ROOT = '<实际容器根>'` 与 `idf-use` 别名 | 换盘后切器找不到根 |
 | 12 | `git config --global user.email` | 非空且为自己邮箱 | Git 全局配置丢失 |
-| 13 | `node --version` / `npm config get prefix` | 版本与 winget 当时的 LTS 一致；prefix 为 `D:\Dev\tools\npm-global` | Node 未装或 npm 全局目录留在 C 盘 |
+| 13 | `node --version` / `npm config get prefix` | 版本与 winget 当时的 LTS 一致；prefix 为 `D:\Dev\tools\npm-global`；`npm i -g <小工具>` 后能在任意目录直接敲 | Node 未装、npm 全局目录留在 C 盘或未进 PATH |
 | 14 | 串口 `PuTTY` + 设备管理器 | 有 COM 口，能读到板子日志 | 驱动未装 |
 
 > 第 3/4 步如果恰好落在「已激活版本」，`idf.py --version` 仍会响应——**不要只看它**，
@@ -799,7 +813,7 @@ bootstrap.ps1 -InstallRoot "E:\Program Files" -WorkspaceRoot "E:\Dev" -All
 | 改安装盘 | `-InstallRoot` / `-WorkspaceRoot` 参数，脚本内无第二套路径 |
 | 加/减 IDF 版本 | 步骤 20 的 `idfVersions` 数组（如加 `v6.0.3`） |
 | 换 Node 版本线 | 步骤 22 的 `id`：`OpenJS.NodeJS.LTS`（LTS）↔ `OpenJS.NodeJS`（Current） |
-| 改 npm 全局目录 | 步骤 22 的 `$npmGlobal` / `$npmCache`（默认 `$WorkspaceRoot\tools` 下） |
+| 改 npm 全局目录 | 步骤 22 的 `$npmGlobal` / `$npmCache`（默认 `$WorkspaceRoot\tools` 下）；改目录后新目录会被自动补进用户 PATH，旧条目不会自动清理，需手动删 |
 | 改切换器逻辑 | `idf-use.ps1`（仓库与 `%USERPROFILE%` 成对同步；改完在仓库跑 `-Only 21` 部署） |
 | 排查历史坑 | 第七章「修复经验档案」按现象查；改动前先读 7.3「设计决策备忘」 |
 

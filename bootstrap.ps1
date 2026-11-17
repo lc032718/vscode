@@ -145,9 +145,9 @@ $Steps = @(
        detail = '把 idf-use.ps1 部署到用户目录并在 PowerShell $PROFILE 注册裸命令 idf-use：切换当前会话的 IDF_PATH / IDF_PYTHON_ENV_PATH / PATH，同步 eim_idf.json 选中版本供 IDE 使用，并按需持久化用户级环境变量。需先跑步骤 17（或 20）。';
        check = 'idf-use -List；idf-use 5.4.3 后 idf.py --version'; enabled = $true }
     @{ no = 22; title = '安装 Node.js LTS（npm 全局目录落 D 盘）'; kind = 'winget'; id = 'OpenJS.NodeJS.LTS'; dir = 'nodejs';
-       detail = "winget 装 Node.js LTS；实测该包是 wix 安装器，--location 生效，本体落 $InstallRoot\nodejs（C:\Program Files\nodejs 不产生目录）。装完把 npm 的 prefix / cache 改到 $WorkspaceRoot\tools 下——默认是 %APPDATA%\npm 与 %LOCALAPPDATA%\npm-cache，全局包一多就把 C 盘吃掉。脚本不改 PATH，全局命令目录需手动加入（见 README 5.9）。";
+       detail = "winget 装 Node.js LTS；实测该包是 wix 安装器，--location 生效，本体落 $InstallRoot\nodejs（C:\Program Files\nodejs 不产生目录）。装完把 npm 的 prefix / cache 改到 $WorkspaceRoot\tools 下——默认是 %APPDATA%\npm 与 %LOCALAPPDATA%\npm-cache，全局包一多就把 C 盘吃掉；再把全局命令目录加入用户 PATH（脚本唯一一处改 PATH 的地方，只增不删），否则 npm i -g 装的 CLI 敲不出来。详见 README 5.9。";
        postNode = $true;
-       check = 'node --version；npm config get prefix 应指向 D 盘'; enabled = $true }
+       check = 'node --version；npm config get prefix 指向 D 盘；新终端能直接敲全局 CLI'; enabled = $true }
 )
 
 # ============================================================
@@ -245,6 +245,42 @@ function Resolve-Tool([string]$Name, [string[]]$Fallback) {
         if ($p -and (Test-Path -LiteralPath $p)) { return $p }
     }
     return $null
+}
+
+# 把目录加入「用户级」PATH：只增不删、幂等、保留注册表值类型（ExpandString 不被降级）。
+# 这是脚本里唯一会改 PATH 的地方（步骤 22 的 npm 全局目录），因为 npm 全局 CLI
+# 不加 PATH 就敲不出来；其它工具仍遵循「脚本不改 PATH，重开终端靠安装器自己写」。
+function Add-UserPathEntry([string]$Dir) {
+    if (-not $Dir) { return $false }
+    $keyPath = 'HKCU:\Environment'
+    if (-not (Test-Path -LiteralPath $keyPath)) { return $false }
+
+    $key = Get-Item -LiteralPath $keyPath
+    $raw = $key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+    if ($null -eq $raw) { $raw = '' }
+    $kind = $key.GetValueKind('Path')
+
+    $exists = @(($raw -split ';') | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $Dir.TrimEnd('\')) }).Count -gt 0
+    if ($exists) { return $false }
+
+    $new = if ([string]::IsNullOrWhiteSpace($raw)) { $Dir } else { $raw.TrimEnd(';') + ';' + $Dir }
+    if ($kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+        Set-ItemProperty -LiteralPath $keyPath -Name 'Path' -Value $new -Type ExpandString
+    } else {
+        Set-ItemProperty -LiteralPath $keyPath -Name 'Path' -Value $new -Type String
+    }
+
+    # 广播 WM_SETTINGCHANGE：新开的终端（父进程是 explorer）才会读到新 PATH。
+    # 当前已存在的终端必然读不到，属预期。
+    if (-not ('Win32.EnvBroadcast' -as [type])) {
+        Add-Type -Namespace Win32 -Name EnvBroadcast -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
+'@
+    }
+    $res = [UIntPtr]::Zero
+    [void][Win32.EnvBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 2, 3000, [ref]$res)
+    return $true
 }
 
 function Write-Title($s) { Write-Host "`n[步骤 $($s.no)] $($s.title)" -ForegroundColor Cyan }
@@ -603,12 +639,24 @@ foreach ($s in $ordered) {
                     } finally {
                         $ErrorActionPreference = $prevEap
                     }
-                    Write-Host "    提示：全局命令目录 $npmGlobal 未加入 PATH（脚本不改 PATH）；需要全局 CLI 时手动加入，或直接用 npx。" -ForegroundColor Yellow
-                    # 本机 PATH 里可能已有别的 node（WorkBuddy 内置 / nvm / 旧安装），先装的不一定先命中
-                    $pathNodeCmd = Get-Command node -ErrorAction SilentlyContinue
-                    $pathNode = if ($pathNodeCmd) { $pathNodeCmd.Source } else { '' }
-                    if ($pathNode -and (-not $pathNode.Equals($nodeExe, [System.StringComparison]::OrdinalIgnoreCase))) {
-                        Write-Host "    注意：当前 PATH 里的 node 是 $pathNode，不是本步骤刚装的 $nodeExe；" -ForegroundColor Yellow
+                    # 全局 CLI 目录不加入 PATH 就敲不出来（npm 自己不会加），这里主动加。
+                    # 这是脚本里唯一改 PATH 的地方：只增一条自己的目录、幂等、不碰其它条目。
+                    if (Add-UserPathEntry -Dir $npmGlobal) {
+                        Write-Ok "已把 $npmGlobal 加入用户 PATH（新开的终端生效；当前终端可先用 npx）"
+                    } else {
+                        Write-Host "    $npmGlobal 已在用户 PATH 中" -ForegroundColor DarkGray
+                    }
+                    # 提示「持久化 PATH 里谁先命中 node」——不能用 Get-Command node：
+                    # 当前进程可能被父进程（如 IDE/客户端）注入了自己的 node 目录，那不是用户能修的配置。
+                    $persistPath = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+                    $hitNode = $null
+                    foreach ($d in ($persistPath -split ';')) {
+                        if (-not $d) { continue }
+                        $cand = Join-Path $d.Trim().Trim('"') 'node.exe'
+                        if (Test-Path -LiteralPath $cand -PathType Leaf) { $hitNode = $cand; break }
+                    }
+                    if ($hitNode -and (-not $hitNode.Equals($nodeExe, [System.StringComparison]::OrdinalIgnoreCase))) {
+                        Write-Host "    注意：系统/用户 PATH 里先命中的是 $hitNode，不是本步骤刚装的 $nodeExe；" -ForegroundColor Yellow
                         Write-Host "          要让新版本生效，把 $target 放到 PATH 中更靠前的位置（或移除前一个 node）。" -ForegroundColor Yellow
                     }
                 } else {
