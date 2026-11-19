@@ -11,7 +11,7 @@
 | 项目 | 说明 |
 |---|---|
 | 交付物 | `bootstrap.ps1`（主脚本，自包含，不依赖同目录任何文件）+ `idf-use.ps1`（ESP-IDF 多版本切换器，步骤 21 部署） |
-| 驱动方式 | 脚本顶部 `$Steps` 编号清单（当前 22 步），脚本按清单逐项执行 |
+| 驱动方式 | 脚本顶部 `$Steps` 编号清单（当前 23 步），脚本按清单逐项执行 |
 | 软件版本 | **不钉版本号**，winget / EIM / aqt 自动取最新稳定版，重复执行幂等 |
 | 适用系统 | Windows 10/11，Windows PowerShell 5.1 或 PowerShell 7 |
 | 人工收尾 | 步骤 11–15（工具链、驱动、SSH 凭据、代码仓库）只打印操作，不自动执行 |
@@ -56,6 +56,7 @@
 | EIM 索引文件 `eim_idf.json` | 默认 `C:\Espressif\tools`，仅几 KB；迁走会让 `eim list` / `select` 等命令都得带额外参数，得不偿失 |
 | 步骤 22 会修改用户 PATH | npm 全局 CLI 目录（`D:\Dev\tools\npm-global`）不加 PATH 就敲不出来，npm 自己不会加。这是脚本**唯一**主动改 PATH 的地方：只追加自己一条目录、幂等去重、保留注册表值类型，不删改他人条目 |
 | `~\.npmrc`（npm 用户配置） | 配置文件本身很小且必须在用户目录，但**内容**（prefix / cache）全部指向 D 盘 |
+| 步骤 23 MobaXterm 用绿色版 | 官方 MSI 是 per-machine 安装，装到非系统盘需管理员提权，且 winget 的 `--location` 对它无效（实测仍落 C 盘 85 MB）。绿色版文件完整、无注册表写入、卸载即删目录 |
 
 ---
 
@@ -81,8 +82,8 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
 
 | 指令 | 作用 |
 |---|---|
-| `bootstrap.ps1 -List` | 查看 22 步清单 + 16 个插件明细 + 安装规则 + 指令表 |
-| `bootstrap.ps1 -All` | **安装所有**：执行全部 22 步 |
+| `bootstrap.ps1 -List` | 查看 23 步清单 + 16 个插件明细 + 安装规则 + 指令表 |
+| `bootstrap.ps1 -All` | **安装所有**：执行全部 23 步 |
 | `bootstrap.ps1` | 同 `-All` |
 | `bootstrap.ps1 -Only 1,2,3` | 只跑指定步骤（单步写 `-Only 17`） |
 | `bootstrap.ps1 -Only 16` | 单独跑冒烟校验 |
@@ -134,9 +135,10 @@ bootstrap.ps1 -Only 16         # 复核校验表
 | 20 | ESP-IDF 多版本 6.0.2 / 5.4.3 | `eim install -i` | `D:\Dev\esp\v6.0.2`、`v5.4.3`（共享 `tools`） | `idf-use -List` 三个版本（见 5.8） |
 | 21 | IDF 版本切换器 `idf-use` | 复制脚本 + `$PROFILE` 别名 | `%USERPROFILE%\idf-use.ps1` | `idf-use 5.4.3` 后 `idf.py --version` |
 | 22 | Node.js LTS（npm 目录落 D 盘） | winget + `npm config` | `D:\Program Files\nodejs`；npm 全局/缓存 → `D:\Dev\tools` | `node --version`；`npm config get prefix` 在 D 盘 |
+| 23 | MobaXterm（串口 / SSH 终端） | 官方绿色版 zip | `D:\Dev\tools\MobaXterm` | 主程序存在、CygUtils 插件齐全 |
 
-> 执行顺序是 1→15 → 17 → 18 → 19 → 20 → 21 → 22 → 16：追加步骤后冒烟校验仍强制排最后，保证校验结果准确。
-> 步骤 22（Node.js）独立无依赖，赶时间可先单跑 `-Only 22`，不必等 ESP-IDF / Qt 那几步。
+> 执行顺序是 1→15 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 16：追加步骤后冒烟校验仍强制排最后，保证校验结果准确。
+> 步骤 22（Node.js）、23（MobaXterm）独立无依赖，赶时间可先单跑 `-Only 22` / `-Only 23`，不必等 ESP-IDF / Qt 那几步。
 
 ### 前三步的具体流程
 
@@ -325,6 +327,7 @@ D:\Dev\                    # 工具链 / 仓库 / 数据
   ├─ tools\Qt\             # Qt 库 + MinGW + Qt Creator
   ├─ tools\npm-global\     # npm 全局包（npm config prefix）
   ├─ tools\npm-cache\      # npm 缓存（npm config cache）
+  ├─ tools\MobaXterm\      # 串口 / SSH 终端（绿色版，配置写同目录 ini）
   ├─ esp\                  # ESP-IDF 根（多版本共存）
   │   ├─ eim-config.toml   #   EIM 配置：路径全部钉 D 盘
   │   ├─ v6.1\esp-idf\     #   最新版（步骤 17）
@@ -597,6 +600,55 @@ npm ls -g --depth=0                             # 全局包列表（刚装完为
 > 校验表（步骤 16）里的 **Node.js** 一行按「安装根目录实扫 `node.exe`」判定，并显示 npm prefix
 > 是否在 D 盘 —— 不受 PATH 顺序影响，能真实反映本方案有没有装到位。
 
+### 5.10 MobaXterm（串口 / SSH 终端，步骤 23）
+
+```powershell
+bootstrap.ps1 -Only 23      # 从官网拉最新绿色版，解压到 D:\Dev\tools\MobaXterm
+```
+
+**为什么不用 winget 装（实测结论）**
+
+| 尝试 | 结果 |
+|---|---|
+| `winget install --id Mobatek.MobaXterm --location "D:\Program Files\MobaXterm"` | 退出码 0，但文件落在 **`C:\Program Files (x86)\Mobatek\MobaXterm`（85 MB）**——该包是 `InstallerType: zip` + `NestedInstallerType: wix`，`--location` 传的 `TARGETDIR` 不被 MSI 采用 |
+| `msiexec /i msi INSTALLDIR=...`（非提权） | 返回 **1603**（致命错误），per-machine MSI 需要管理员 |
+| `msiexec /x {ProductCode}` 卸载 | 同样 1603；`winget uninstall` 也报 1603（这条路径没有提权） |
+| `msiexec /a msi TARGETDIR=...`（管理安装，无需提权） | 成功，但**只展开 MSI 文件表里的 2 个文件**（`MobaXterm.exe` + `MobaXterm_installer.dat`），缺 `CygUtils.plugin` / `CygUtils64.plugin` / `MobaRTE.exe` |
+| 官方 portable zip | ✅ 三个文件齐全，解压即用，无需管理员、不写注册表 |
+
+> 结论：这类「zip 套 wix」的包，`--location` 基本指望不上；想装到非系统盘，绿色版是最稳的路子。
+
+**装了什么**
+
+| 文件 | 说明 |
+|---|---|
+| `MobaXterm_Personal_26.6.exe`（15.8 MB） | 主程序，文件名带版本号 |
+| `CygUtils.plugin` / `CygUtils64.plugin`（31 MB） | 会话底层插件，**缺它串口/SSH 起不来** |
+| `MobaXterm.ini` | 首次运行在同目录生成，配置随目录走（可直接备份迁移） |
+
+下载链接从官网 `download-home-edition.html` 页面**实时解析**，不写死版本号；优先用系统 `curl.exe`
+（44 MB 的包在 PS 5.1 的 `Invoke-WebRequest` 下实测会断流，只下到 26 MB），失败自动重试 3 次。
+
+**使用**
+
+1. 双击 `D:\Dev\tools\MobaXterm\MobaXterm_Personal_26.6.exe`；
+2. 右键任务栏图标 → 固定，方便下次打开（绿色版不注册开始菜单项）；
+3. 串口：`Session → Serial` → 选板子的 COM 口 → 波特率按固件设置（常见 115200）；
+4. SSH：`Session → SSH`，与 PuTTY 并存，按习惯选用。
+
+**升级 / 卸载**
+
+- 升级：删掉 `D:\Dev\tools\MobaXterm` 整个目录，重跑 `-Only 23`（会重新解析官网当前版）；
+- 卸载：直接删目录即可，不留注册表垃圾。
+
+**验证**
+
+```powershell
+Get-ChildItem 'D:\Dev\tools\MobaXterm'          # 应有 MobaXterm_Personal_*.exe + 2 个 CygUtils*.plugin
+```
+
+> 校验表（步骤 16）里的 **MobaXterm（串口）** 一行按目录实扫主程序与插件，不依赖 PATH 或注册表。
+
 ---
 
 ## 六、冒烟校验
@@ -611,6 +663,7 @@ npm ls -g --depth=0                             # 全局包列表（刚装完为
 | ESP-IDF 多版本（步骤 20） | `idf-use -List` 能列出 6.0.2 / 5.4.3 / 最新版，各自有 venv 与激活脚本 |
 | ESP-IDF 工具链 | `D:\Dev\esp\tools` 下有 xtensa / riscv / cmake 等目录 |
 | Node.js（步骤 22） | `D:\Program Files\nodejs\node.exe` 存在，且 `npm config get prefix` 在 D 盘 |
+| MobaXterm（步骤 23） | `D:\Dev\tools\MobaXterm\MobaXterm_Personal_*.exe` 存在，且 `CygUtils*.plugin` 不少于 2 个 |
 | Qt qmake / Qt MinGW | 目录实扫 `qmake.exe` / `mingw32-make.exe` |
 | VSCode 扩展 | 已装数 ≥ 清单 16 个 |
 | C 盘残留 | `C:\Espressif` 存在则 WARN，如实报告 |
@@ -648,6 +701,10 @@ Qt 装到 D 盘也可能没加 PATH，只看环境变量会误报 FAIL。
 | 🟠 P1 | 装完 Node.js 后 `npm i -g` 的包和缓存都堆在 C 盘（`%APPDATA%\npm`、`%LOCALAPPDATA%\npm-cache`） | npm 默认 prefix/cache 就在用户漫游目录，与 Node 本体装哪无关 | 步骤 22 用 `npm config set prefix/cache` 指向 `D:\Dev\tools\npm-global` 与 `npm-cache`，写入用户级 `~\.npmrc`（详见 5.9） |
 | 🟡 P2 | `node --version` 显示的版本不是刚装的那个 | 机器上常有多个 node（IDE 内置、nvm、旧安装），PATH 先命中的不是本方案装的；**IDE 还会给子进程前置注入自己的 node**，在 IDE 终端里看到的未必是真实配置 | 步骤 22 按「持久化 PATH（机器 + 用户）」模拟命中并提示，不会被注入误导；校验表按「安装根目录实扫」判定。查真实顺序的方法见 5.9 |
 | 🟡 P2 | 用户 PATH 里残留 `C:\Users\<你>\AppData\Roaming\npm` | 那是 npm **旧**默认全局目录，prefix 改到 D 盘后已成死路径，容易让人误判「哪个 npm 目录生效」 | 替换为 `D:\Dev\tools\npm-global`（本机已处理，原 PATH 备份在 `%USERPROFILE%\path-backup-<时间>.txt`）；步骤 22 幂等补加，不会重复 |
+| 🔴 P0 | `winget install MobaXterm --location "D:\..."` 报成功，实际仍装在 `C:\Program Files (x86)\Mobatek`（85 MB） | 该包 `InstallerType: zip` + `NestedInstallerType: wix`，winget 把 location 作 `TARGETDIR` 传给 MSI，而 MobaXterm 的目录属性是 `INSTALLDIR` | 放弃 winget 安装路径，步骤 23 改走官方绿色版 zip 解压到 `D:\Dev\tools\MobaXterm`（详见 5.10） |
+| 🟠 P1 | 想用 `msiexec /i INSTALLDIR=...` 重装到 D 盘、或 `/x` 卸载，都返回 **1603** | per-machine MSI 需要管理员；脚本进程未提权，`winget uninstall` 同样失败 | 脚本不弹 UAC：改用绿色版；已装在 C 盘的实例建议从「设置 → 应用」手动卸载 |
+| 🟡 P2 | `msiexec /a`（管理安装）展开成功，但程序目录只有 2 个文件，串口起不来 | 管理安装只解 MSI **文件表**里的文件；`CygUtils*.plugin` 存在 `MobaXterm_installer.dat`（zip 自解压包）里，要首次运行才落地 | 不用 `/a`，直接用官方 portable zip（三个文件齐全） |
+| 🟡 P2 | PS 5.1 `Invoke-WebRequest` 下载 44 MB 的包只下到 26 MB 就结束 | IWR 在大文件 + 进度条场景下会中断流 | 优先调用系统 `curl.exe -L --fail --retry -C -`，失败重试 3 次并按文件大小校验 |
 
 ### 7.2 跨机可移植性加固（2026-11-16 全流程审核）
 
@@ -746,11 +803,12 @@ Qt 装到 D 盘也可能没加 PATH，只看环境变量会误报 FAIL。
 **9.2 执行**
 
 ```powershell
-bootstrap.ps1 -List                 # 先看清单，确认 20/21/22 步在列
-bootstrap.ps1 -All                  # 全部 22 步（含插件、Git、目录、ESP-IDF 集成、Qt、Node）
+bootstrap.ps1 -List                 # 先看清单，确认 20/21/22/23 步在列
+bootstrap.ps1 -All                  # 全部 23 步（含插件、Git、目录、ESP-IDF 集成、Qt、Node、MobaXterm）
 bootstrap.ps1 -Only 20              # 多版本：v6.0.2 + v5.4.3（数 GB，建议单跑）
 bootstrap.ps1 -Only 21              # 部署 idf-use 切换器 + 写 IDF_USE_ROOT
 bootstrap.ps1 -Only 22              # Node.js LTS + npm 目录落 D 盘（很小，-All 已含）
+bootstrap.ps1 -Only 23              # MobaXterm 绿色版（串口/SSH，约 44 MB）
 bootstrap.ps1 -Only 16              # 冒烟校验
 ```
 
@@ -794,6 +852,7 @@ bootstrap.ps1 -InstallRoot "E:\Program Files" -WorkspaceRoot "E:\Dev" -All
 | 12 | `git config --global user.email` | 非空且为自己邮箱 | Git 全局配置丢失 |
 | 13 | `node --version` / `npm config get prefix` | 版本与 winget 当时的 LTS 一致；prefix 为 `D:\Dev\tools\npm-global`；`npm i -g <小工具>` 后能在任意目录直接敲 | Node 未装、npm 全局目录留在 C 盘或未进 PATH |
 | 14 | 串口 `PuTTY` + 设备管理器 | 有 COM 口，能读到板子日志 | 驱动未装 |
+| 15 | `Get-ChildItem D:\Dev\tools\MobaXterm` | 主程序 `MobaXterm_Personal_*.exe` + 2 个 `CygUtils*.plugin` 齐全 | MobaXterm 未装或插件缺失 |
 
 > 第 3/4 步如果恰好落在「已激活版本」，`idf.py --version` 仍会响应——**不要只看它**，
 > 第 6 步的 `cmake` 版本差异才证明「工具链真的跟着切了」。
@@ -814,6 +873,7 @@ bootstrap.ps1 -InstallRoot "E:\Program Files" -WorkspaceRoot "E:\Dev" -All
 | 加/减 IDF 版本 | 步骤 20 的 `idfVersions` 数组（如加 `v6.0.3`） |
 | 换 Node 版本线 | 步骤 22 的 `id`：`OpenJS.NodeJS.LTS`（LTS）↔ `OpenJS.NodeJS`（Current） |
 | 改 npm 全局目录 | 步骤 22 的 `$npmGlobal` / `$npmCache`（默认 `$WorkspaceRoot\tools` 下）；改目录后新目录会被自动补进用户 PATH，旧条目不会自动清理，需手动删 |
+| 换 MobaXterm 版本 | 删掉 `D:\Dev\tools\MobaXterm` 后重跑 `-Only 23`（下载链接从官网实时解析，不写死版本） |
 | 改切换器逻辑 | `idf-use.ps1`（仓库与 `%USERPROFILE%` 成对同步；改完在仓库跑 `-Only 21` 部署） |
 | 排查历史坑 | 第七章「修复经验档案」按现象查；改动前先读 7.3「设计决策备忘」 |
 

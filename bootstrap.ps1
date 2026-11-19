@@ -148,6 +148,9 @@ $Steps = @(
        detail = "winget 装 Node.js LTS；实测该包是 wix 安装器，--location 生效，本体落 $InstallRoot\nodejs（C:\Program Files\nodejs 不产生目录）。装完把 npm 的 prefix / cache 改到 $WorkspaceRoot\tools 下——默认是 %APPDATA%\npm 与 %LOCALAPPDATA%\npm-cache，全局包一多就把 C 盘吃掉；再把全局命令目录加入用户 PATH（脚本唯一一处改 PATH 的地方，只增不删），否则 npm i -g 装的 CLI 敲不出来。详见 README 5.9。";
        postNode = $true;
        check = 'node --version；npm config get prefix 指向 D 盘；新终端能直接敲全局 CLI'; enabled = $true }
+    @{ no = 23; title = '安装 MobaXterm（串口 / SSH 终端，绿色版落 D 盘）'; kind = 'moba-portable';
+       detail = "MobaXterm 的 winget 包是 zip + 嵌套 wix MSI：实测 --location 对它无效（仍装到 C:\Program Files (x86)\Mobatek，85 MB），而 msiexec 装到别处需要管理员。这里改走官方绿色版 zip，解压到 $WorkspaceRoot\tools\MobaXterm：文件完整（含 CygUtils 插件）、无需管理员、卸载即删目录，首次运行在同目录生成 MobaXterm.ini（配置随目录走）。下载链接从官网页面实时解析，不写死版本号。";
+       check = '运行 MobaXterm_Personal_*.exe → Serial 会话能看到 COM 口'; enabled = $true }
 )
 
 # ============================================================
@@ -418,6 +421,16 @@ function Invoke-Verify {
         $nodeDetail = "$nodeVer；npm prefix 仍在 C 盘：$npmPrefix"
     }
     [void]$r.Add([pscustomobject]@{ Item = 'Node.js'; Status = $(if ($nodeOk) { 'PASS' } else { 'FAIL' }); Detail = $nodeDetail })
+
+    # 串口 / SSH 终端：MobaXterm 绿色版（步骤 23）按目录实扫，主程序名带版本号（MobaXterm_Personal_<ver>.exe）
+    $mobaDir = Join-Path $WorkspaceRoot 'tools\MobaXterm'
+    $mobaExe = Get-ChildItem -LiteralPath $mobaDir -Filter 'MobaXterm*.exe' -File -ErrorAction SilentlyContinue |
+               Sort-Object LastWriteTime | Select-Object -Last 1
+    $mobaPlugins = @(Get-ChildItem -LiteralPath $mobaDir -Filter 'CygUtils*.plugin' -File -ErrorAction SilentlyContinue).Count
+    $mobaDetail = if (-not $mobaExe) { "$mobaDir 下未找到 MobaXterm*.exe（步骤 23）" }
+                  elseif ($mobaPlugins -ge 2) { "$($mobaExe.Name)；CygUtils 插件齐全" }
+                  else { "$($mobaExe.Name)；缺少 CygUtils 插件（首次运行会自解压，目录需可写）" }
+    [void]$r.Add([pscustomobject]@{ Item = 'MobaXterm（串口）'; Status = $(if ($mobaExe) { 'PASS' } else { 'FAIL' }); Detail = $mobaDetail })
 
     $codeExe = Resolve-Tool 'code' $codeFallback
     $n = 0
@@ -1052,6 +1065,107 @@ if (Test-Path -LiteralPath `$idfUseScript) {
                 Write-Host "    $profilePath 已注册 idf-use（v2），跳过。" -ForegroundColor DarkGray
             }
             Write-Host '    重开终端后可直接敲：idf-use -List / idf-use 5.4.3 / idf-use -Current' -ForegroundColor DarkGray
+        }
+        'moba-portable' {
+            # 为什么不用 winget：该包 InstallerType=zip + NestedInstallerType=wix，
+            # 实测 --location 被忽略，MSI 固定装到 C:\Program Files (x86)\Mobatek（85 MB）；
+            # 直接 msiexec /i 改路径又需要管理员（非提权返回 1603），脚本不弹 UAC。
+            # 官方绿色版 zip 文件完整、免安装、配置随目录走，最符合 D 盘规则。
+            $target = Join-Path $WorkspaceRoot 'tools\MobaXterm'
+            $existing = Get-ChildItem -LiteralPath $target -Filter 'MobaXterm*.exe' -File -ErrorAction SilentlyContinue |
+                        Sort-Object LastWriteTime | Select-Object -Last 1
+            if ($existing) {
+                Write-Ok "已安装，跳过下载：$($existing.FullName)"
+                Write-Host '    升级：先删掉该目录，再重跑 -Only 23（会重新拉取官网当前版）。' -ForegroundColor DarkGray
+                break
+            }
+
+            $pageUrl = 'https://mobaxterm.mobatek.net/download-home-edition.html'
+            Write-Host "    解析官网下载链接：$pageUrl" -ForegroundColor White
+            $html = ''
+            $prevProgress = $ProgressPreference
+            try {
+                $ProgressPreference = 'SilentlyContinue'
+                $html = (Invoke-WebRequest -Uri $pageUrl -UseBasicParsing -TimeoutSec 40).Content
+            } catch {
+                Write-Warning "    访问官网失败：$($_.Exception.Message)"
+                Write-Host "    可手动下载 MobaXterm portable zip，解压到 $target" -ForegroundColor Yellow
+                break
+            } finally {
+                $ProgressPreference = $prevProgress
+            }
+
+            # 页面上同时挂着当前版与上一版的链接，第一个即当前版
+            $m = [regex]::Matches($html, 'https://download\.mobatek\.net/[0-9A-Za-z]+/MobaXterm_Portable_v[\d\.]+\.zip')
+            if ($m.Count -eq 0) {
+                Write-Warning '    未能从官网页面解析到 portable 下载链接（页面结构可能已变）。'
+                Write-Host "    请手动下载并解压到 $target" -ForegroundColor Yellow
+                break
+            }
+            $url = $m[0].Value
+            $leaf = Split-Path -Leaf $url
+            $tmpDir = Join-Path $WorkspaceRoot 'tmp'
+            New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+            $zipPath = Join-Path $tmpDir $leaf
+            Write-Host "    下载 $leaf（约 44 MB）" -ForegroundColor White
+            # 优先用系统自带 curl：44 MB 的包在 PS 5.1 的 Invoke-WebRequest 下实测会中途断流（只下到 26 MB），
+            # curl 支持断点续传且更稳；没有 curl 时再退回 Invoke-WebRequest。
+            $downloaded = $false
+            $curl = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
+            $prevEapDl = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                for ($attempt = 1; $attempt -le 3; $attempt++) {
+                    if ($curl) {
+                        & $curl.Source -L -s -S --fail --retry 2 --retry-delay 2 -C - -o $zipPath $url
+                    } else {
+                        $prevProgress = $ProgressPreference
+                        try {
+                            $ProgressPreference = 'SilentlyContinue'
+                            Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -TimeoutSec 600
+                        } finally { $ProgressPreference = $prevProgress }
+                    }
+                    if ((Test-Path -LiteralPath $zipPath) -and ((Get-Item -LiteralPath $zipPath).Length -gt 20MB)) {
+                        $downloaded = $true; break
+                    }
+                    Write-Host "    第 $attempt 次下载未完成（$([math]::Round((Get-Item -LiteralPath $zipPath).Length/1MB,1)) MB），重试…" -ForegroundColor Yellow
+                    Start-Sleep -Seconds 3
+                }
+            } catch {
+                Write-Warning "    下载异常：$($_.Exception.Message)"
+            } finally {
+                $ErrorActionPreference = $prevEapDl
+            }
+            if (-not $downloaded) {
+                Write-Warning '    下载失败或文件不完整'
+                Write-Host "    可手动下载 $url 并解压到 $target" -ForegroundColor Yellow
+                break
+            }
+
+            New-Item -ItemType Directory -Force -Path $target | Out-Null
+            try {
+                Expand-Archive -LiteralPath $zipPath -DestinationPath $target -Force -ErrorAction Stop
+            } catch {
+                Write-Warning "    解压失败：$($_.Exception.Message)"
+                Write-Host "    压缩包可能不完整：删掉 $zipPath 后重跑 -Only 23" -ForegroundColor Yellow
+                break
+            }
+            $exe = Get-ChildItem -LiteralPath $target -Filter 'MobaXterm*.exe' -File -ErrorAction SilentlyContinue |
+                   Select-Object -First 1
+            if ($exe) {
+                Write-Ok "已解压到 $target"
+                Write-Ok "主程序：$($exe.Name)（$([math]::Round($exe.Length/1MB,1)) MB）"
+                $plugins = @(Get-ChildItem -LiteralPath $target -Filter 'CygUtils*.plugin' -File -ErrorAction SilentlyContinue).Count
+                if ($plugins -ge 2) { Write-Ok 'CygUtils 插件齐全（Serial / SSH 会话依赖它）' }
+                else { Write-Warning '    CygUtils 插件不完整：首次运行时可能自解压补齐，注意目录需可写' }
+                Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+                Write-Host ''
+                Write-Host "    首次使用：双击 $($exe.FullName)" -ForegroundColor White
+                Write-Host '    建议右键 → 固定到任务栏 / 开始屏幕；MobaXterm.ini 会自动生成在该目录，配置随目录走。' -ForegroundColor DarkGray
+                Write-Host '    串口：Session → Serial → 选板子 COM 口，波特率按固件设置（常见 115200）。' -ForegroundColor DarkGray
+            } else {
+                Write-Warning '    解压后未找到 MobaXterm*.exe，请检查压缩包内容。'
+            }
         }
         'dirs' {
             foreach ($sub in $s.dirs) {
